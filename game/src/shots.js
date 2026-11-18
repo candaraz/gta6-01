@@ -1,79 +1,158 @@
-// The screenshot scenes behind ?shot=start|play|end. Each one plays the real rules forward from a
-// fresh world for a fixed number of steps, steered by a simple autopilot (look ahead each way the
-// paddle could move, keep clear of blocks, chase the lowest coin when that is safe), so the frame
-// is what a short game really looks like and the same seed always gives the same frame.
-import { FIELD, PLAYER, STEP } from './config.js';
-import { EVENT_OVER, KIND_BLOCK } from './world.js';
-import { SCREEN_OVER, SCREEN_PLAY, SCREEN_TITLE } from './render.js';
+// The staged screenshot scenes behind ?shot=. Each one sets the real game
+// state — a chase, a firefight, a drive, the title screen — steps the real
+// simulation forward with scripted input, renders, and sets window.__shotReady.
+// Nothing is edited or composited: every pixel comes from the game's code.
 
-const START_SECONDS = 5;
-const PLAY_SECONDS = 26;
-const END_LIMIT_SECONDS = 600;
-/**
- * How far ahead, in seconds, the autopilot checks each way it could move: the play scene's pilot
- * looks well ahead and keeps all its lives; the end scene's looks only a moment ahead, so it is
- * caught out once the blocks speed up, as a hurried player is.
- */
-const HORIZON_PLAY = 0.7;
-const HORIZON_END = 0.25;
-const SAMPLE = 1 / 30;
-const DIRECTIONS = [0, -1, 1];
-/** Extra room, each side, it keeps between the paddle and a block. */
-const MARGIN = 10;
+import { PLACES, STEP } from './config.js';
+import { createVehicle } from './vehicles.js';
 
-/** Seconds until moving in `direction` (-1, 0, 1) runs the paddle into a block; Infinity when it never does. */
-function timeToHit(state, direction, horizon) {
-  const player = state.player;
-  for (let t = SAMPLE; t <= horizon; t += SAMPLE) {
-    const x = Math.min(FIELD.width - player.width, Math.max(0, player.x + direction * PLAYER.speed * t));
-    for (let index = 0; index < state.items.length; index += 1) {
-      const item = state.items[index];
-      if (!item.active || item.kind !== KIND_BLOCK) continue;
-      const y = item.y + item.speed * t;
-      if (y + item.height > player.y && y < player.y + player.height && item.x < x + player.width + MARGIN && item.x + item.width > x - MARGIN) return t;
-    }
-  }
-  return Infinity;
+function driveScript(axes, extra = {}) {
+  return { keys: new Set(), axes, click: false, handbrake: false, sprint: false, ...extra };
 }
 
-/** Of the safe ways to move, the one toward the lowest coin (or the centre); else the one that is hit last. */
-function autopilot(state, horizon) {
-  const player = state.player;
-  let coin = null;
-  for (let index = 0; index < state.items.length; index += 1) {
-    const item = state.items[index];
-    if (item.active && item.kind !== KIND_BLOCK && (coin === null || item.y > coin.y)) coin = item;
+function runSteps(ctx, count, script) {
+  for (let i = 0; i < count; i += 1) {
+    ctx.step(STEP, script(i));
   }
-  const target = coin === null ? FIELD.width / 2 : coin.x + coin.width / 2;
-  const centre = player.x + player.width / 2;
-  const wanted = target > centre + 8 ? 1 : target < centre - 8 ? -1 : 0;
-  let best = wanted;
-  let bestTime = timeToHit(state, wanted, horizon);
-  for (let index = 0; index < DIRECTIONS.length && bestTime !== Infinity; index += 1) {
-    const time = timeToHit(state, DIRECTIONS[index], horizon);
-    if (time > bestTime) {
-      bestTime = time;
-      best = DIRECTIONS[index];
-    }
-  }
-  return best;
 }
 
-/**
- * Set `world` to the named scene (start, play or end; any other name is start) and return the
- * screen to draw over it and the best score to show.
- */
-export function stageShot(name, world) {
-  world.reset();
-  if (name !== 'play' && name !== 'end') {
-    for (let index = 0; index < START_SECONDS / STEP; index += 1) world.step(STEP, 0, true);
-    return { screen: SCREEN_TITLE, best: 0 };
+function renderFrames(ctx, count) {
+  for (let i = 0; i < count; i += 1) {
+    ctx.renderer.render(ctx.scene, ctx.camera);
   }
-  const limit = name === 'end' ? END_LIMIT_SECONDS : PLAY_SECONDS;
-  const horizon = name === 'end' ? HORIZON_END : HORIZON_PLAY;
-  for (let index = 0; index < limit / STEP; index += 1) {
-    if (world.step(STEP, autopilot(world.state, horizon), false) & EVENT_OVER) break;
+  window.__shotReady = true;
+}
+
+function beginPlay(ctx) {
+  ctx.S.screen = 'play';
+  ctx.hud.hideStart();
+  ctx.hud.setHudVisible(true);
+}
+
+// 1-cover: a three-star police chase down the main avenue — cruisers on
+// both flanks and one head-on, traffic ahead, the minimap, the objective
+// and the waypoint on the HUD.
+function stageChase(ctx) {
+  beginPlay(ctx);
+  const { S, player } = ctx;
+  const car = createVehicle('sports', 0xc22e2e, 0, -90, 0);
+  sceneAdd(ctx, car);
+  player.x = 0;
+  player.z = -90;
+  player.heading = 0;
+  ctx.enterCar(car);
+  S.money = 1250;
+  S.weapons = ['fists', 'pistol'];
+  S.currentWeapon = 'pistol';
+  S.ammo.pistol = 36;
+  ctx.police.setStars(3);
+  S.debugObjective = { title: 'THE PICKUP', text: 'Drive Pearl to the marina meet' };
+  S.waypoint = { x: PLACES.marinaMeet.x, z: PLACES.marinaMeet.z, label: 'Marina Meet' };
+  ctx.cam.setYaw(Math.PI);
+  ctx.cam.snapTo(car);
+  // Traffic on the avenue, same direction and oncoming.
+  ctx.traffic.spawnCarAt('sedan', -2.4, -30, 0, true, 1);
+  ctx.traffic.spawnCarAt('van', 2.4, -10, Math.PI, true, -1);
+  ctx.traffic.spawnCarAt('hatch', -2.4, 30, 0, true, 1);
+  runSteps(ctx, 100, () => driveScript({ x: 0, z: -1 }, { keys: new Set() }));
+  // Arrange the pursuit so it reads in one frame: one cruiser on each flank
+  // matching speed, one head-on ahead.
+  const flank = [
+    { dx: -4.6, dz: 4, heading: 0 },
+    { dx: 4.6, dz: 2, heading: 0 },
+    { dx: 1.5, dz: 46, heading: Math.PI },
+    { dx: -3, dz: 28, heading: Math.PI },
+  ];
+  ctx.police.cruisers.forEach((cruiser, i) => {
+    const pose = flank[i % flank.length];
+    cruiser.x = car.x + pose.dx;
+    cruiser.z = car.z + pose.dz;
+    cruiser.heading = pose.heading;
+    cruiser.speed = car.speed * 0.92;
+    cruiser.mesh.position.set(cruiser.x, 0, cruiser.z);
+    cruiser.mesh.rotation.y = cruiser.heading;
+  });
+  runSteps(ctx, 22, () => driveScript({ x: 0, z: -1 }, { keys: new Set() }));
+  renderFrames(ctx, 3);
+}
+
+// 2: on foot down an open avenue, mid-firefight — goons ahead, the waypoint
+// beacon beyond them, dialogue, the crosshair, a fresh muzzle flash.
+function stageMission(ctx) {
+  beginPlay(ctx);
+  const { S, player } = ctx;
+  player.x = 120;
+  player.z = 60;
+  player.heading = 0;
+  player.health = 78;
+  player.mesh.position.set(player.x, 0, player.z);
+  player.mesh.rotation.y = player.heading;
+  S.money = 840;
+  S.weapons = ['fists', 'pistol', 'smg'];
+  S.currentWeapon = 'pistol';
+  S.ammo.pistol = 30;
+  S.ammo.smg = 90;
+  const rng = ctx.rng;
+  ctx.combat.spawnGoon(118, 82, rng);
+  ctx.combat.spawnGoon(124, 88, rng);
+  ctx.combat.spawnGoon(120, 96, rng);
+  for (const goon of ctx.combat.goons) goon.alerted = true;
+  S.debugObjective = { title: 'DOCKSIDE HEAT', text: 'Clear the yards of Deke\u2019s crew (3 left)' };
+  S.waypoint = { x: 120, z: 102, label: 'Deke’s Crew' };
+  ctx.hud.setDialogue(['Pearl', 'His boys are all over the yards. Go loud — and come back.']);
+  ctx.cam.setYaw(Math.PI);
+  ctx.cam.snapTo(player);
+  // Let the goons close in and trade shots, then fire one last round so the
+  // muzzle flash is still lit when the frame is rendered.
+  runSteps(ctx, 50, () => driveScript({ x: 0, z: 0 }, { keys: new Set() }));
+  runSteps(ctx, 1, () => driveScript({ x: 0, z: 0 }, { click: true, keys: new Set() }));
+  ctx.hud.setDialogue(['Pearl', 'His boys are all over the yards. Go loud — and come back.']);
+  renderFrames(ctx, 3);
+}
+
+// 3: driving east along the marina road in traffic, pedestrians on the
+// sidewalks, the speedometer up, Tessa's garage ahead on the waypoint.
+function stageDrive(ctx) {
+  beginPlay(ctx);
+  const { S, player } = ctx;
+  const car = createVehicle('sedan', 0x3d6e9e, -120, 120, Math.PI / 2);
+  sceneAdd(ctx, car);
+  player.x = -120;
+  player.z = 120;
+  player.heading = Math.PI / 2;
+  ctx.enterCar(car);
+  ctx.police.clearStars();
+  S.money = 420;
+  S.debugObjective = { title: 'WHEELS UP', text: "Drive to Tessa's Garage" };
+  S.waypoint = { x: PLACES.tessasGarage.x, z: PLACES.tessasGarage.z, label: "Tessa's Garage" };
+  ctx.cam.setYaw((Math.PI / 2) + Math.PI);
+  ctx.cam.snapTo(car);
+  runSteps(ctx, 130, () => driveScript({ x: 0, z: -1 }, { keys: new Set() }));
+  renderFrames(ctx, 3);
+}
+
+// 4: the title screen over a high view of downtown and the bay.
+function stageTitle(ctx) {
+  ctx.S.screen = 'title';
+  ctx.hud.showStart(false);
+  ctx.hud.setHudVisible(false);
+  ctx.cam.setFraming(265, 48, 40, -30, 6, -30);
+  // Let the streets live a little behind the menu.
+  for (let i = 0; i < 40; i += 1) {
+    ctx.traffic.update(STEP, ctx.player, [ctx.player], null);
+    ctx.pedestrians.update(STEP, ctx.player, ctx.S.danger, ctx.city);
   }
-  const over = world.state.lives === 0;
-  return { screen: over ? SCREEN_OVER : SCREEN_PLAY, best: world.state.score };
+  renderFrames(ctx, 3);
+}
+
+function sceneAdd(ctx, car) {
+  ctx.scene.add(car.mesh);
+  ctx.S.looseCars.push(car);
+}
+
+export function stageShot(name, ctx) {
+  if (name === 'mission') stageMission(ctx);
+  else if (name === 'drive') stageDrive(ctx);
+  else if (name === 'title') stageTitle(ctx);
+  else stageChase(ctx);
 }

@@ -1,53 +1,115 @@
-// Keyboard and pointer input. Held keys give a steering direction; one-shot presses (start or
-// restart, pause) are queued as bit flags and taken once by the loop, so a press between two
-// frames is never lost and never counted twice.
+// Keyboard and mouse, read once a frame. Keys are held state; actions are
+// one-frame presses the game consumes. The camera orbits while the mouse is
+// dragged, and the arrow keys turn it for players without a mouse handy.
 
-export const ACTION_CONFIRM = 1;
-export const ACTION_PAUSE = 2;
+export function createInput(canvas) {
+  const held = new Set();
+  const pressed = new Set();
+  let mouseDown = false;
+  let lastX = 0;
+  let lastY = 0;
+  let dragX = 0;
+  let dragY = 0;
+  let clicked = false;
 
-const LEFT = new Set(['ArrowLeft', 'KeyA']);
-const RIGHT = new Set(['ArrowRight', 'KeyD']);
-const CONFIRM = new Set(['Space', 'Enter']);
-const PAUSE = new Set(['KeyP', 'Escape']);
-
-export function createInput(target) {
-  let left = false;
-  let right = false;
-  let actions = 0;
+  function keyName(event) {
+    const key = event.key;
+    if (key === ' ') return 'Space';
+    if (key.length === 1) return key.toUpperCase();
+    return key;
+  }
 
   window.addEventListener('keydown', (event) => {
-    if (LEFT.has(event.code)) left = true;
-    else if (RIGHT.has(event.code)) right = true;
-    else if (CONFIRM.has(event.code)) {
-      if (!event.repeat) actions |= ACTION_CONFIRM;
-    } else if (PAUSE.has(event.code)) {
-      if (!event.repeat) actions |= ACTION_PAUSE;
-    } else return;
-    event.preventDefault();
+    if (event.repeat) return;
+    const name = keyName(event);
+    held.add(name);
+    pressed.add(name);
+    if (['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(name)) event.preventDefault();
   });
   window.addEventListener('keyup', (event) => {
-    if (LEFT.has(event.code)) left = false;
-    else if (RIGHT.has(event.code)) right = false;
+    held.delete(keyName(event));
   });
-  // A key released while the tab is hidden never sends keyup: let go of everything on blur.
   window.addEventListener('blur', () => {
-    left = false;
-    right = false;
-  });
-  target.addEventListener('pointerdown', () => {
-    actions |= ACTION_CONFIRM;
+    held.clear();
   });
 
+  canvas.addEventListener('mousedown', (event) => {
+    mouseDown = true;
+    lastX = event.clientX;
+    lastY = event.clientY;
+    clicked = true;
+  });
+  window.addEventListener('mouseup', () => {
+    mouseDown = false;
+  });
+  window.addEventListener('mousemove', (event) => {
+    if (!mouseDown) return;
+    dragX += event.clientX - lastX;
+    dragY += event.clientY - lastY;
+    lastX = event.clientX;
+    lastY = event.clientY;
+  });
+  // Touch: one finger drags the camera, two quick taps act like a click.
+  canvas.addEventListener('touchstart', (event) => {
+    const touch = event.touches[0];
+    lastX = touch.clientX;
+    lastY = touch.clientY;
+    mouseDown = true;
+  }, { passive: true });
+  canvas.addEventListener('touchmove', (event) => {
+    const touch = event.touches[0];
+    dragX += touch.clientX - lastX;
+    dragY += touch.clientY - lastY;
+    lastX = touch.clientX;
+    lastY = touch.clientY;
+  }, { passive: true });
+  canvas.addEventListener('touchend', () => {
+    mouseDown = false;
+  }, { passive: true });
+
   return {
-    /** -1 for left, 1 for right, 0 for neither or both. */
-    direction() {
-      return (right ? 1 : 0) - (left ? 1 : 0);
+    // Held movement, camera-relative, as -1..1 on each axis.
+    moveAxes() {
+      let x = 0;
+      let z = 0;
+      if (held.has('A') || held.has('ArrowLeft')) x -= 1;
+      if (held.has('D') || held.has('ArrowRight')) x += 1;
+      if (held.has('W') || held.has('ArrowUp')) z -= 1;
+      if (held.has('S') || held.has('ArrowDown')) z += 1;
+      return { x, z };
     },
-    /** The one-shot presses since the last call, as ACTION_* flags. */
-    takeActions() {
-      const taken = actions;
-      actions = 0;
-      return taken;
+    sprint() {
+      return held.has('Shift');
+    },
+    handbrake() {
+      return held.has('Space');
+    },
+    cameraDrag() {
+      const out = { x: dragX, y: dragY };
+      dragX = 0;
+      dragY = 0;
+      return out;
+    },
+    wasPressed(name) {
+      return pressed.has(name);
+    },
+    wasClicked() {
+      return clicked;
+    },
+    mouseHeld() {
+      return mouseDown;
+    },
+    endFrame() {
+      pressed.clear();
+      clicked = false;
+    },
+    // Scripted input for the staged screenshot scenes and self-tests.
+    inject(keys, click) {
+      for (const key of keys) held.add(key);
+      if (click) clicked = true;
+    },
+    releaseAll() {
+      held.clear();
     },
   };
 }

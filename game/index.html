@@ -3,16 +3,191 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Block Dodger</title>
+<title>Solmar Bay — an open-world crime story</title>
 <style>
-  html, body { margin: 0; height: 100%; overflow: hidden; background: #11141b; }
-  #game { position: fixed; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
-  /* Read aloud, never shown: the status line screen readers announce. */
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #0e1a24; }
+  body { font-family: "Arial Narrow", Arial, Helvetica, sans-serif; color: #fff; }
+  canvas.webgl { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+  #hud { position: fixed; inset: 0; pointer-events: none; z-index: 5; }
+  .panel { text-shadow: 0 2px 4px rgba(0,0,0,.85), 0 0 2px rgba(0,0,0,.9); }
+  /* Minimap, top left, round like a rear-view mirror. */
+  #minimap-wrap { position: absolute; top: 16px; left: 16px; width: 190px; height: 190px;
+    border-radius: 50%; overflow: hidden; border: 3px solid rgba(255,255,255,.85);
+    box-shadow: 0 4px 14px rgba(0,0,0,.5); background: #46543f; }
+  #minimap { width: 100%; height: 100%; display: block; }
+  /* Money and wanted stars, top right. */
+  #stats { position: absolute; top: 16px; right: 20px; text-align: right; }
+  #money { font-size: 34px; font-weight: 900; letter-spacing: 1px; color: #7dff9a; }
+  #stars { font-size: 30px; letter-spacing: 4px; color: #ffd94a; line-height: 1.2; }
+  #stars.evading { animation: blink 0.5s steps(2, start) infinite; }
+  #evade-label { display: none; font-size: 13px; font-weight: 700; letter-spacing: 3px; color: #ffd94a; }
+  #medallion-count { font-size: 16px; font-weight: 700; color: #ffd94a; margin-top: 2px; }
+  @keyframes blink { 50% { opacity: 0.25; } }
+  /* Health, bottom left. */
+  #health-wrap { position: absolute; left: 20px; bottom: 20px; width: 240px; }
+  #health-label { font-size: 13px; font-weight: 700; letter-spacing: 2px; margin-bottom: 4px; }
+  #health-bar { height: 14px; background: rgba(0,0,0,.55); border: 2px solid rgba(255,255,255,.8); border-radius: 3px; overflow: hidden; }
+  #health-fill { height: 100%; width: 100%; background: #3ecf6e; transition: width .15s; }
+  /* Objective tracker, above the health bar. */
+  #objective { position: absolute; left: 20px; bottom: 78px; max-width: 430px; }
+  #objective-title { font-size: 15px; font-weight: 900; letter-spacing: 2px; color: #ffd94a; }
+  #objective-text { font-size: 19px; font-weight: 700; line-height: 1.25; }
+  #objective-dist { font-size: 15px; font-weight: 700; color: #bfe8ff; }
+  #timer { display: none; margin-top: 4px; font-size: 26px; font-weight: 900; color: #fff; }
+  #timer.urgent { color: #ff5a4a; }
+  /* Speedometer and weapon, bottom right. */
+  #speedo { display: none; position: absolute; right: 20px; bottom: 20px; text-align: right; }
+  #speed-value { font-size: 46px; font-weight: 900; line-height: 1; }
+  #speed-unit { font-size: 15px; font-weight: 700; letter-spacing: 2px; color: #bfe8ff; }
+  #car-name { font-size: 16px; font-weight: 700; letter-spacing: 1px; color: #ffd94a; }
+  #weapon-box { position: absolute; right: 20px; bottom: 108px; text-align: right; }
+  #weapon-name { font-size: 19px; font-weight: 900; letter-spacing: 1px; }
+  #ammo { font-size: 15px; font-weight: 700; color: #bfe8ff; }
+  /* Centre-bottom prompt and dialogue. */
+  #prompt { display: none; position: absolute; left: 50%; bottom: 150px; transform: translateX(-50%);
+    font-size: 19px; font-weight: 700; background: rgba(0,0,0,.55); padding: 7px 16px; border-radius: 4px; white-space: nowrap; }
+  #dialogue { display: none; position: absolute; left: 50%; bottom: 196px; transform: translateX(-50%);
+    width: min(620px, 86vw); background: rgba(8,14,20,.78); border-left: 4px solid #ffd94a;
+    padding: 10px 16px; border-radius: 3px; }
+  #dialogue-speaker { font-size: 14px; font-weight: 900; letter-spacing: 2px; color: #7ae0c8; }
+  #dialogue-text { font-size: 19px; font-weight: 700; line-height: 1.3; }
+  /* Toasts, bust meter, crosshair, waypoint arrow, damage flash. */
+  #toast { display: none; position: absolute; left: 50%; top: 17%; transform: translateX(-50%);
+    font-size: 34px; font-weight: 900; letter-spacing: 2px; text-align: center; opacity: 0; }
+  #toast.show { animation: toastin .25s ease-out forwards; }
+  @keyframes toastin { from { opacity: 0; transform: translateX(-50%) scale(.85); } to { opacity: 1; transform: translateX(-50%) scale(1); } }
+  #bust-meter { display: none; position: absolute; left: 50%; top: 96px; transform: translateX(-50%);
+    width: 280px; text-align: center; }
+  #bust-label { font-size: 14px; font-weight: 900; letter-spacing: 3px; color: #ff5a4a; }
+  #bust-bar { height: 10px; background: rgba(0,0,0,.55); border: 2px solid #fff; border-radius: 3px; overflow: hidden; }
+  #bust-fill { height: 100%; width: 0%; background: #ff5a4a; }
+  #crosshair { display: none; position: absolute; left: 50%; top: 50%; width: 8px; height: 8px;
+    transform: translate(-50%, -50%); border-radius: 50%; background: #fff;
+    box-shadow: 0 0 0 2px rgba(0,0,0,.6); }
+  #waypoint-arrow { display: none; position: absolute; width: 0; height: 0; z-index: 6;
+    border-left: 14px solid transparent; border-right: 14px solid transparent;
+    border-bottom: 24px solid #ffd94a; filter: drop-shadow(0 2px 3px rgba(0,0,0,.8)); }
+  #vignette { position: fixed; inset: 0; pointer-events: none; z-index: 4; opacity: 0;
+    box-shadow: inset 0 0 120px 40px rgba(200,20,20,.75); transition: opacity .1s; }
+  #vignette.hurt { opacity: 1; }
+  /* Full-screen overlays: start, pause, end, map. */
+  .overlay { position: fixed; inset: 0; z-index: 10; display: flex; align-items: center; justify-content: center;
+    background: linear-gradient(180deg, rgba(6,18,30,.62), rgba(6,18,30,.42) 55%, rgba(20,10,4,.66)); }
+  .card { max-width: 660px; width: min(660px, 92vw); padding: 28px 34px; text-align: center; }
+  .game-title { font-size: 74px; font-weight: 900; letter-spacing: 6px; line-height: 0.95; margin: 0;
+    color: #ffd94a; text-shadow: 0 4px 0 #b25a1c, 0 8px 24px rgba(0,0,0,.7); }
+  .game-sub { font-size: 19px; font-weight: 700; letter-spacing: 5px; color: #7ae0c8; margin: 8px 0 18px; }
+  .story { font-size: 18px; line-height: 1.45; color: #f2ede2; text-align: left; margin: 0 0 16px; }
+  .controls { display: grid; grid-template-columns: 1fr 1fr; gap: 5px 22px; text-align: left;
+    font-size: 15px; margin: 0 0 20px; color: #d8e6ee; }
+  .controls b { color: #ffd94a; font-weight: 900; }
+  .btn { pointer-events: auto; display: block; width: 100%; margin: 8px 0; padding: 13px; font-size: 20px;
+    font-weight: 900; letter-spacing: 2px; color: #12202c; background: #ffd94a; border: none;
+    border-radius: 4px; cursor: pointer; font-family: inherit; }
+  .btn:hover { background: #ffe98a; }
+  .btn.secondary { background: #e8e4da; }
+  .btn.secondary:hover { background: #fff; }
+  .fineprint { font-size: 13px; color: #9fb4c0; margin-top: 14px; line-height: 1.4; }
+  #pause-menu, #end-screen, #bigmap { display: none; }
+  .menu-title { font-size: 44px; font-weight: 900; letter-spacing: 4px; margin: 0 0 10px; color: #fff; }
+  #pause-stats { font-size: 16px; color: #d8e6ee; margin-bottom: 16px; line-height: 1.5; }
+  #end-title { font-size: 64px; font-weight: 900; letter-spacing: 8px; color: #ff5a4a; margin: 0; }
+  #end-text { font-size: 19px; color: #f2ede2; margin: 10px 0 20px; }
+  #bigmap-canvas { width: min(640px, 88vw); height: min(640px, 88vw); border: 3px solid #fff; background: #3d4a3a; }
   #status { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 </style>
+<script type="importmap">
+{ "imports": { "three": "./vendor/three.module.min.js" } }
+</script>
 </head>
 <body>
-<canvas id="game" aria-label="Block Dodger: move the paddle left and right to dodge falling blocks and catch coins"></canvas>
+<div id="hud">
+  <div id="minimap-wrap"><canvas id="minimap" width="200" height="200"></canvas></div>
+  <div id="stats" class="panel">
+    <div id="money">$0</div>
+    <div id="stars">☆☆☆☆☆</div>
+    <div id="evade-label">EVADE THE POLICE</div>
+    <div id="medallion-count">☀ 0/12</div>
+  </div>
+  <div id="objective" class="panel">
+    <div id="objective-title"></div>
+    <div id="objective-text"></div>
+    <div id="objective-dist"></div>
+    <div id="timer"></div>
+  </div>
+  <div id="health-wrap" class="panel">
+    <div id="health-label">HEALTH <span id="health-text">100</span></div>
+    <div id="health-bar"><div id="health-fill"></div></div>
+  </div>
+  <div id="weapon-box" class="panel">
+    <div id="weapon-name">Fists</div>
+    <div id="ammo"></div>
+  </div>
+  <div id="speedo" class="panel">
+    <div><span id="speed-value">0</span> <span id="speed-unit">KM/H</span></div>
+    <div id="car-name"></div>
+  </div>
+  <div id="prompt" class="panel"></div>
+  <div id="dialogue"><div id="dialogue-speaker"></div><div id="dialogue-text"></div></div>
+  <div id="toast" class="panel"></div>
+  <div id="bust-meter"><div id="bust-label">BUSTED INCOMING — MOVE!</div><div id="bust-bar"><div id="bust-fill"></div></div></div>
+  <div id="crosshair"></div>
+  <div id="waypoint-arrow"></div>
+</div>
+<div id="vignette"></div>
+
+<div id="start-screen" class="overlay">
+  <div class="card">
+    <h1 class="game-title">SOLMAR BAY</h1>
+    <div class="game-sub">SUN &nbsp;•&nbsp; SALT &nbsp;•&nbsp; STOLEN CARS</div>
+    <p class="story">Milo Kade is back in Solmar Bay with an empty wallet and a debt to pay.
+      Pearl Ochoa has the jobs, Tessa has the garage, and Deke Marsh has the whole city scared.
+      Steal cars, run the jobs, shake the heat — and take the Bay back, one sunset at a time.</p>
+    <div class="controls">
+      <div><b>W A S D</b> — move / drive</div>
+      <div><b>Mouse drag</b> — look around</div>
+      <div><b>E</b> — enter / exit car, talk, start job</div>
+      <div><b>Click / F</b> — shoot / punch</div>
+      <div><b>1 2 3</b> — fists, pistol, SMG</div>
+      <div><b>Space</b> — handbrake / jump</div>
+      <div><b>Shift</b> — sprint</div>
+      <div><b>M</b> — city map &nbsp; <b>P</b> — pause</div>
+    </div>
+    <button id="start-btn" class="btn">START THE STORY</button>
+    <button id="continue-btn" class="btn secondary">CONTINUE SAVED GAME</button>
+    <p class="fineprint">An original game: its city, people, cars, story, art and music were made
+      for this entry. Sound is synthesized live — headphones recommended. Your progress saves
+      automatically after each job.</p>
+  </div>
+</div>
+
+<div id="pause-menu" class="overlay">
+  <div class="card">
+    <h2 class="menu-title">PAUSED</h2>
+    <p id="pause-stats"></p>
+    <button id="resume-btn" class="btn">RESUME</button>
+    <button id="save-btn" class="btn secondary">SAVE GAME</button>
+    <button id="restart-btn" class="btn secondary">RESTART FROM SAVE</button>
+    <p class="fineprint">WASD move &nbsp;•&nbsp; E enter car / talk &nbsp;•&nbsp; Click shoot &nbsp;•&nbsp; F punch
+      &nbsp;•&nbsp; 1/2/3 weapons &nbsp;•&nbsp; Space handbrake &nbsp;•&nbsp; M map</p>
+  </div>
+</div>
+
+<div id="end-screen" class="overlay">
+  <div class="card">
+    <h2 id="end-title">WASTED</h2>
+    <p id="end-text"></p>
+    <button id="end-btn" class="btn">GET BACK UP</button>
+  </div>
+</div>
+
+<div id="bigmap" class="overlay">
+  <div class="card">
+    <canvas id="bigmap-canvas" width="640" height="640"></canvas>
+    <button id="close-map-btn" class="btn">CLOSE MAP (M)</button>
+  </div>
+</div>
+
 <p id="status" role="status" aria-live="polite"></p>
 <script type="module" src="./src/main.js"></script>
 </body>
