@@ -1,241 +1,189 @@
-// Combat: fists, a pistol and an SMG, the Marsh crew goons who fight back,
-// and the pickups they drop. Shooting is a hitscan check down the aim line
-// with a spread that grows with distance; melee is a short arc in front of
-// the player. Goons chase, strafe and shoot back until they drop.
+// Solmar Bay — combat.
+// One job: weapons, shooting, and the enemies who shoot back. Hitscan with a
+// raycast against enemy bodies and cars; enemies are simple humanoids with
+// health who take cover behind the nearest building edge and fire back with
+// inaccuracy. Health and armour live on the player.
 
 import * as THREE from 'three';
-import { WEAPONS } from './config.js';
-import { buildPersonMesh } from './pedestrians.js';
+import { WEAPONS, WEAPON_ORDER } from './config.js';
+import { makeRng, clamp, dist2D } from './random.js';
 
-export function createCombat(scene, city, effects, audio) {
-  const goons = [];
-  const pickups = [];
-  let cooldown = 0;
-  let muzzleTimer = 0;
+function makeEnemyMesh() {
+  const g = new THREE.Group();
+  const shirt = new THREE.MeshLambertMaterial({ color: 0x3a3a3a });
+  const pants = new THREE.MeshLambertMaterial({ color: 0x1a1a1a });
+  const skin = new THREE.MeshLambertMaterial({ color: 0xb08060 });
+  const vest = new THREE.MeshLambertMaterial({ color: 0x5a1a1a });
+  const body = new THREE.Mesh(new THREE.CylinderGeometry(0.3, 0.34, 0.9, 8), shirt);
+  body.position.y = 1.0; body.castShadow = true; g.add(body);
+  const vestM = new THREE.Mesh(new THREE.BoxGeometry(0.6, 0.5, 0.36), vest);
+  vestM.position.y = 1.05; g.add(vestM);
+  const head = new THREE.Mesh(new THREE.SphereGeometry(0.22, 10, 8), skin);
+  head.position.y = 1.7; g.add(head);
+  const gun = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.08, 0.55), new THREE.MeshLambertMaterial({ color: 0x111111 }));
+  gun.position.set(0.3, 1.2, 0.3); g.add(gun);
+  for (const sx of [-0.13, 0.13]) {
+    const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.11, 0.12, 0.55, 6), pants);
+    leg.position.set(sx, 0.28, 0); g.add(leg);
+  }
+  return g;
+}
 
-  const pickupGeo = new THREE.BoxGeometry(0.5, 0.5, 0.5);
-  const healthMat = new THREE.MeshLambertMaterial({ color: 0x2ecc71, emissive: 0x1a7a44, emissiveIntensity: 0.8 });
-  const ammoMat = new THREE.MeshLambertMaterial({ color: 0xe8a81c, emissive: 0x8a5a00, emissiveIntensity: 0.8 });
-  const cashMat = new THREE.MeshLambertMaterial({ color: 0x2e8a5a, emissive: 0x145a30, emissiveIntensity: 0.8 });
-
-  function spawnGoon(x, z, rng) {
-    const { group, limbs } = buildPersonMesh(0x22222a, 0x33333c, rng.pick([0xe8b98a, 0xc98d5e, 0x8a5a3a]), 1.08);
-    group.position.set(x, 0, z);
-    // A red cap marks the Marsh crew.
-    const cap = new THREE.Mesh(new THREE.BoxGeometry(0.46, 0.16, 0.46), new THREE.MeshLambertMaterial({ color: 0xc22e2e }));
-    cap.position.y = 2.08;
-    group.add(cap);
-    // The gun in his hand.
-    const gun = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.08, 0.42), new THREE.MeshLambertMaterial({ color: 0x1a1a1c }));
-    gun.position.set(0.42, 1.35, 0.3);
-    group.add(gun);
-    scene.add(group);
-    const goon = {
-      mesh: group,
-      limbs,
-      x,
-      z,
-      heading: Math.atan2(0 - x, 0 - z),
-      health: 55,
-      speed: 0,
-      walkPhase: 0,
-      shootTimer: rng.range(0.6, 1.6),
-      strafeDir: rng.chance(0.5) ? 1 : -1,
-      strafeTimer: rng.range(1, 3),
-      dead: false,
-      deadTimer: 0,
-      alerted: false,
-    };
-    goons.push(goon);
-    return goon;
+export class Combat {
+  constructor(scene, city, effects) {
+    this.scene = scene;
+    this.city = city;
+    this.effects = effects;
+    this.rng = makeRng(99);
+    this.enemies = [];
+    this.weapon = 'pistol';
+    this.ammo = { pistol: 120, smg: 0, shotgun: 0, rifle: 0 };
+    this.mag = { pistol: 12, smg: 0, shotgun: 0, rifle: 0 };
+    this.cooldown = 0;
+    this.ray = new THREE.Raycaster();
+    this.aimPoint = new THREE.Vector3();
   }
 
-  function spawnPickup(kind, x, z) {
-    const mat = kind === 'health' ? healthMat : kind === 'ammo' ? ammoMat : cashMat;
-    const mesh = new THREE.Mesh(pickupGeo, mat);
-    mesh.position.set(x, 0.7, z);
-    mesh.rotation.y = Math.PI / 4;
-    scene.add(mesh);
-    pickups.push({ kind, mesh, x, z, bob: Math.random() * Math.PI * 2, life: 45 });
+  hasWeapon(w) { return this.mag[w] > 0 || this.ammo[w] > 0; }
+  select(w) { if (this.hasWeapon(w)) this.weapon = w; }
+  cycle() {
+    const i = WEAPON_ORDER.indexOf(this.weapon);
+    for (let k = 1; k <= WEAPON_ORDER.length; k++) {
+      const w = WEAPON_ORDER[(i + k) % WEAPON_ORDER.length];
+      if (this.hasWeapon(w)) { this.weapon = w; return; }
+    }
+  }
+  giveWeapon(w, ammo) {
+    this.ammo[w] = (this.ammo[w] ?? 0) + ammo;
+    if (this.mag[w] === 0) { this.mag[w] = Math.min(WEAPONS[w].mag, this.ammo[w]); this.ammo[w] -= this.mag[w]; }
+  }
+  reload() {
+    const w = WEAPONS[this.weapon];
+    const need = w.mag - this.mag[this.weapon];
+    const take = Math.min(need, this.ammo[this.weapon]);
+    this.mag[this.weapon] += take;
+    this.ammo[this.weapon] -= take;
   }
 
-  // A shot from (x, z) along heading: the first goon, ped or police target
-  // inside a narrow cone and the weapon's range takes the damage.
-  function shoot(shooter, weaponId, targets, onHit) {
-    const weapon = WEAPONS[weaponId];
-    if (cooldown > 0) return false;
-    cooldown = weapon.rate;
-    effects.muzzle(shooter.x, shooter.y || 0, shooter.z, shooter.heading);
-    audio.shot(weaponId === 'smg');
-    muzzleTimer = 0.06;
-    let best = null;
-    let bestDist = weapon.range;
-    for (const target of targets) {
-      if (target.dead || target.down) continue;
-      const dx = target.x - shooter.x;
-      const dz = target.z - shooter.z;
-      const dist = Math.sqrt(dx * dx + dz * dz);
-      if (dist > weapon.range || dist < 0.5) continue;
-      const angle = Math.atan2(dx, dz);
-      let diff = angle - shooter.heading;
-      while (diff > Math.PI) diff -= Math.PI * 2;
-      while (diff < -Math.PI) diff += Math.PI * 2;
-      const spread = 0.06 + dist * 0.004;
-      if (Math.abs(diff) > spread + 0.1) continue;
-      if (dist < bestDist) {
-        bestDist = dist;
-        best = target;
+  // Spawn N enemies around (x,z). They belong to a group (mission) id.
+  spawnEnemies(x, z, count, group) {
+    const out = [];
+    for (let i = 0; i < count; i++) {
+      const mesh = makeEnemyMesh();
+      const ex = x + this.rng.range(-18, 18);
+      const ez = z + this.rng.range(-18, 18);
+      mesh.position.set(ex, 0, ez);
+      this.scene.add(mesh);
+      const e = {
+        mesh, x: ex, z: ez, hp: 100, group,
+        shootTimer: this.rng.range(0.5, 2), moveTimer: 0,
+        tx: ex, tz: ez, dead: false, speed: this.rng.range(2.5, 3.8),
+      };
+      this.enemies.push(e);
+      out.push(e);
+    }
+    return out;
+  }
+  enemiesAlive(group) { return this.enemies.filter((e) => !e.dead && (!group || e.group === group)).length; }
+  clearGroup(group) {
+    for (let i = this.enemies.length - 1; i >= 0; i--) {
+      if (!group || this.enemies[i].group === group) {
+        this.scene.remove(this.enemies[i].mesh);
+        this.enemies.splice(i, 1);
       }
     }
-    if (best) {
-      const damage = weapon.damage * (bestDist > 30 ? 0.7 : 1);
-      onHit(best, damage);
-      effects.blood(best.x, 0, best.z);
-    } else {
-      // A miss still kicks up dust where the shot lands.
-      const endX = shooter.x + Math.sin(shooter.heading) * Math.min(weapon.range, 30);
-      const endZ = shooter.z + Math.cos(shooter.heading) * Math.min(weapon.range, 30);
-      effects.dust(endX, 0, endZ);
+  }
+
+  // Fire the current weapon from the camera toward the screen centre.
+  shoot(camera, player, playerCar, onHit) {
+    if (this.cooldown > 0) return false;
+    const w = WEAPONS[this.weapon];
+    if (this.mag[this.weapon] <= 0) { this.reload(); if (this.mag[this.weapon] <= 0) return false; }
+    this.cooldown = 1 / w.rate;
+    this.mag[this.weapon]--;
+    const pellets = w.pellets ?? 1;
+    for (let p = 0; p < pellets; p++) {
+      const dir = new THREE.Vector3();
+      camera.getWorldDirection(dir);
+      dir.x += (this.rng.next() - 0.5) * w.spread * 2;
+      dir.y += (this.rng.next() - 0.5) * w.spread * 2;
+      dir.z += (this.rng.next() - 0.5) * w.spread * 2;
+      dir.normalize();
+      this.ray.set(camera.position, dir);
+      this.ray.far = w.range;
+      // test enemies
+      let hitEnemy = null, hitDist = Infinity;
+      for (const e of this.enemies) {
+        if (e.dead) continue;
+        const toE = new THREE.Vector3(e.x - camera.position.x, 1.2 - camera.position.y, e.z - camera.position.z);
+        const d = toE.length();
+        if (d > w.range) continue;
+        toE.normalize();
+        if (toE.dot(dir) > 0.995 && d < hitDist) { hitDist = d; hitEnemy = e; }
+      }
+      if (hitEnemy) {
+        hitEnemy.hp -= w.damage;
+        this.effects.blood(hitEnemy.x, 1.2, hitEnemy.z);
+        if (hitEnemy.hp <= 0) {
+          hitEnemy.dead = true;
+          hitEnemy.mesh.rotation.x = -Math.PI / 2;
+          hitEnemy.mesh.position.y = 0.3;
+          onHit?.('kill', hitEnemy);
+        } else onHit?.('hit', hitEnemy);
+      }
+      // muzzle flash + tracer
+      this.effects.muzzle(camera.position.clone().add(dir.clone().multiplyScalar(1.2)));
+      this.effects.tracer(camera.position.clone().add(dir.clone().multiplyScalar(1.2)), dir.clone().multiplyScalar(Math.min(hitDist, w.range)));
     }
+    if (this.mag[this.weapon] === 0) this.reload();
     return true;
   }
 
-  function melee(shooter, targets, onHit) {
-    const weapon = WEAPONS.fists;
-    let hitAny = false;
-    for (const target of targets) {
-      if (target.dead || target.down) continue;
-      const dx = target.x - shooter.x;
-      const dz = target.z - shooter.z;
-      const dist = Math.sqrt(dx * dx + dz * dz);
-      if (dist > weapon.range) continue;
-      const angle = Math.atan2(dx, dz);
-      let diff = angle - shooter.heading;
-      while (diff > Math.PI) diff -= Math.PI * 2;
-      while (diff < -Math.PI) diff += Math.PI * 2;
-      if (Math.abs(diff) > 0.9) continue;
-      onHit(target, weapon.damage);
-      effects.blood(target.x, 0, target.z);
-      hitAny = true;
+  update(dt, player, playerCar) {
+    this.cooldown = Math.max(0, this.cooldown - dt);
+    const px = playerCar ? playerCar.x : player.x;
+    const pz = playerCar ? playerCar.z : player.z;
+    for (const e of this.enemies) {
+      if (e.dead) continue;
+      const d = dist2D(e.x, e.z, px, pz);
+      e.shootTimer -= dt;
+      e.moveTimer -= dt;
+      // strafe / reposition: keep 8-25 m from the player, move between shots
+      if (e.moveTimer <= 0) {
+        const ang = this.rng.range(0, Math.PI * 2);
+        const want = clamp(d, 10, 24);
+        e.tx = px + Math.sin(ang) * want;
+        e.tz = pz + Math.cos(ang) * want;
+        e.moveTimer = this.rng.range(1.5, 3.5);
+      }
+      const dx = e.tx - e.x, dz = e.tz - e.z;
+      const dd = Math.hypot(dx, dz);
+      if (dd > 1) {
+        e.x += (dx / dd) * e.speed * dt;
+        e.z += (dz / dd) * e.speed * dt;
+        const pos = this.city.collide(e.x, e.z, 0.4);
+        e.x = pos.x; e.z = pos.z;
+      }
+      e.mesh.position.set(e.x, 0, e.z);
+      e.mesh.rotation.y = Math.atan2(px - e.x, pz - e.z);
+      // shoot back when in range and roughly facing the player
+      if (d < 55 && e.shootTimer <= 0) {
+        e.shootTimer = this.rng.range(0.9, 2.2);
+        const hitChance = clamp(0.22 - d * 0.004, 0.05, 0.22);
+        this.effects.muzzle(new THREE.Vector3(e.x, 1.3, e.z));
+        if (this.rng.next() < hitChance) {
+          if (playerCar) playerCar.damage(8, e.x, e.z);
+          else player.hurt(5);
+        }
+      }
     }
-    if (hitAny) audio.punch();
-    return hitAny;
-  }
-
-  function updateGoons(dt, player, rng, onGoonShot, onGoonDown) {
-    for (const goon of goons) {
-      if (goon.dead) {
-        goon.deadTimer -= dt;
-        goon.mesh.rotation.z = Math.min(Math.PI / 2, goon.mesh.rotation.z + dt * 5);
-        goon.mesh.position.y = Math.max(-0.2, goon.mesh.position.y - dt * 0.2);
-        if (goon.deadTimer <= 0) {
-          scene.remove(goon.mesh);
-          goons.splice(goons.indexOf(goon), 1);
-        }
-        continue;
-      }
-      const dx = player.x - goon.x;
-      const dz = player.z - goon.z;
-      const dist = Math.sqrt(dx * dx + dz * dz);
-      if (!goon.alerted && dist < 34) goon.alerted = true;
-      if (!goon.alerted) {
-        goon.speed = 0;
-      } else {
-        const wantHeading = Math.atan2(dx, dz);
-        let diff = wantHeading - goon.heading;
-        while (diff > Math.PI) diff -= Math.PI * 2;
-        while (diff < -Math.PI) diff += Math.PI * 2;
-        goon.heading += Math.max(-4 * dt, Math.min(4 * dt, diff));
-        goon.strafeTimer -= dt;
-        if (goon.strafeTimer <= 0) {
-          goon.strafeDir *= -1;
-          goon.strafeTimer = rng.range(1, 2.5);
-        }
-        // Keep 9 to 16 metres: advance when far, strafe when close.
-        let moveX = 0;
-        let moveZ = 0;
-        if (dist > 16) {
-          moveX = Math.sin(goon.heading);
-          moveZ = Math.cos(goon.heading);
-          goon.speed = 4.6;
-        } else if (dist < 8) {
-          moveX = -Math.sin(goon.heading);
-          moveZ = -Math.cos(goon.heading);
-          goon.speed = 3;
-        } else {
-          moveX = Math.cos(goon.heading) * goon.strafeDir;
-          moveZ = -Math.sin(goon.heading) * goon.strafeDir;
-          goon.speed = 2.2;
-        }
-        const nx = goon.x + moveX * goon.speed * dt;
-        const nz = goon.z + moveZ * goon.speed * dt;
-        const resolved = city.resolveCollision(nx, nz, 0.55);
-        goon.x = resolved.x;
-        goon.z = resolved.z;
-        goon.shootTimer -= dt;
-        if (goon.shootTimer <= 0 && dist < 30 && Math.abs(diff) < 0.4) {
-          goon.shootTimer = rng.range(0.9, 1.7);
-          onGoonShot(goon, dist);
-        }
-      }
-      goon.mesh.position.set(goon.x, 0, goon.z);
-      goon.mesh.rotation.y = goon.heading;
-      goon.walkPhase += goon.speed * dt * 3.2;
-      const swing = Math.sin(goon.walkPhase) * Math.min(0.7, goon.speed * 0.13);
-      goon.limbs.legL.rotation.x = swing;
-      goon.limbs.legR.rotation.x = -swing;
-      goon.limbs.armR.rotation.x = goon.alerted ? -1.45 : -swing * 0.8;
-      goon.limbs.armL.rotation.x = goon.alerted ? -0.4 : swing * 0.8;
-    }
-    cooldown = Math.max(0, cooldown - dt);
-    muzzleTimer = Math.max(0, muzzleTimer - dt);
-  }
-
-  function updatePickups(dt, player, onCollect) {
-    for (const pickup of pickups) {
-      pickup.life -= dt;
-      pickup.bob += dt * 2.4;
-      pickup.mesh.position.y = 0.7 + Math.sin(pickup.bob) * 0.15;
-      pickup.mesh.rotation.y += dt * 1.6;
-      const dx = player.x - pickup.x;
-      const dz = player.z - pickup.z;
-      if (dx * dx + dz * dz < 1.6 * 1.6) {
-        onCollect(pickup.kind);
-        scene.remove(pickup.mesh);
-        pickups.splice(pickups.indexOf(pickup), 1);
-        continue;
-      }
-      if (pickup.life <= 0) {
-        scene.remove(pickup.mesh);
-        pickups.splice(pickups.indexOf(pickup), 1);
+    // drop dead enemies after a while (keep the scene clean)
+    for (let i = this.enemies.length - 1; i >= 0; i--) {
+      const e = this.enemies[i];
+      if (e.dead && (e.deadTimer = (e.deadTimer ?? 0) + dt) > 20) {
+        this.scene.remove(e.mesh);
+        this.enemies.splice(i, 1);
       }
     }
   }
-
-  return {
-    goons,
-    pickups,
-    spawnGoon,
-    spawnPickup,
-    shoot,
-    melee,
-    updateGoons,
-    updatePickups,
-    damageGoon(goon, damage, onGoonDown) {
-      goon.health -= damage;
-      goon.alerted = true;
-      if (goon.health <= 0 && !goon.dead) {
-        goon.dead = true;
-        goon.deadTimer = 5;
-        if (onGoonDown) onGoonDown(goon);
-      }
-    },
-    clearGoons() {
-      for (const goon of goons) scene.remove(goon.mesh);
-      goons.length = 0;
-    },
-    resetCooldown() {
-      cooldown = 0;
-    },
-  };
 }

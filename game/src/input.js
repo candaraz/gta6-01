@@ -1,115 +1,96 @@
-// Keyboard and mouse, read once a frame. Keys are held state; actions are
-// one-frame presses the game consumes. The camera orbits while the mouse is
-// dragged, and the arrow keys turn it for players without a mouse handy.
+// Solmar Bay — keyboard and mouse input.
+// One job: turn DOM events into a clean per-frame input state the game reads.
+// Keys are tracked by code (layout independent). Mouse drag orbits the camera;
+// the game never needs pointer lock, so it works the same in a real browser and
+// in headless play-tests.
 
-export function createInput(canvas) {
-  const held = new Set();
-  const pressed = new Set();
-  let mouseDown = false;
-  let lastX = 0;
-  let lastY = 0;
-  let dragX = 0;
-  let dragY = 0;
-  let clicked = false;
-
-  function keyName(event) {
-    const key = event.key;
-    if (key === ' ') return 'Space';
-    if (key.length === 1) return key.toUpperCase();
-    return key;
+export class Input {
+  constructor(canvas) {
+    this.keys = new Set();
+    this.pressed = new Set(); // keys pressed since last frame (edge-triggered)
+    this.mouseDX = 0;
+    this.mouseDY = 0;
+    this.dragging = false; // right-drag orbits the camera
+    this.leftDown = false; // left button held = shoot
+    this.wheel = 0;
+    this.anyKey = false;
+    this._canvas = canvas;
+    this._onKeyDown = (e) => {
+      if (e.repeat) return;
+      this.keys.add(e.code);
+      this.pressed.add(e.code);
+      this.anyKey = true;
+      if (['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Tab'].includes(e.code)) e.preventDefault();
+    };
+    this._onKeyUp = (e) => { this.keys.delete(e.code); };
+    this._onMouseDown = (e) => {
+      if (e.button === 2) { this.dragging = true; this._lastX = e.clientX; this._lastY = e.clientY; }
+      if (e.button === 0) this.leftDown = true;
+    };
+    this._onMouseUp = (e) => {
+      if (e.button === 2) this.dragging = false;
+      if (e.button === 0) this.leftDown = false;
+    };
+    this._onMouseMove = (e) => {
+      if (!this.dragging) return;
+      this.mouseDX += e.clientX - this._lastX;
+      this.mouseDY += e.clientY - this._lastY;
+      this._lastX = e.clientX; this._lastY = e.clientY;
+    };
+    this._onWheel = (e) => { this.wheel += e.deltaY; e.preventDefault(); };
+    this._onBlur = () => { this.keys.clear(); this.dragging = false; this.leftDown = false; };
+    this._onContext = (e) => e.preventDefault();
+    window.addEventListener('keydown', this._onKeyDown);
+    window.addEventListener('keyup', this._onKeyUp);
+    canvas.addEventListener('mousedown', this._onMouseDown);
+    window.addEventListener('mouseup', this._onMouseUp);
+    window.addEventListener('mousemove', this._onMouseMove);
+    canvas.addEventListener('wheel', this._onWheel, { passive: false });
+    canvas.addEventListener('contextmenu', this._onContext);
+    window.addEventListener('blur', this._onBlur);
   }
 
-  window.addEventListener('keydown', (event) => {
-    if (event.repeat) return;
-    const name = keyName(event);
-    held.add(name);
-    pressed.add(name);
-    if (['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(name)) event.preventDefault();
-  });
-  window.addEventListener('keyup', (event) => {
-    held.delete(keyName(event));
-  });
-  window.addEventListener('blur', () => {
-    held.clear();
-  });
+  down(code) { return this.keys.has(code); }
+  // true only on the frame the key went down
+  hit(code) { return this.pressed.has(code); }
+  axis(neg, pos) { return (this.keys.has(pos) ? 1 : 0) - (this.keys.has(neg) ? 1 : 0); }
 
-  canvas.addEventListener('mousedown', (event) => {
-    mouseDown = true;
-    lastX = event.clientX;
-    lastY = event.clientY;
-    clicked = true;
-  });
-  window.addEventListener('mouseup', () => {
-    mouseDown = false;
-  });
-  window.addEventListener('mousemove', (event) => {
-    if (!mouseDown) return;
-    dragX += event.clientX - lastX;
-    dragY += event.clientY - lastY;
-    lastX = event.clientX;
-    lastY = event.clientY;
-  });
-  // Touch: one finger drags the camera, two quick taps act like a click.
-  canvas.addEventListener('touchstart', (event) => {
-    const touch = event.touches[0];
-    lastX = touch.clientX;
-    lastY = touch.clientY;
-    mouseDown = true;
-  }, { passive: true });
-  canvas.addEventListener('touchmove', (event) => {
-    const touch = event.touches[0];
-    dragX += touch.clientX - lastX;
-    dragY += touch.clientY - lastY;
-    lastX = touch.clientX;
-    lastY = touch.clientY;
-  }, { passive: true });
-  canvas.addEventListener('touchend', () => {
-    mouseDown = false;
-  }, { passive: true });
+  // call at the end of each frame
+  endFrame() {
+    this.pressed.clear();
+    this.mouseDX = 0;
+    this.mouseDY = 0;
+    this.wheel = 0;
+    this.anyKey = false;
+  }
 
-  return {
-    // Held movement, camera-relative, as -1..1 on each axis.
-    moveAxes() {
-      let x = 0;
-      let z = 0;
-      if (held.has('A') || held.has('ArrowLeft')) x -= 1;
-      if (held.has('D') || held.has('ArrowRight')) x += 1;
-      if (held.has('W') || held.has('ArrowUp')) z -= 1;
-      if (held.has('S') || held.has('ArrowDown')) z += 1;
-      return { x, z };
-    },
-    sprint() {
-      return held.has('Shift');
-    },
-    handbrake() {
-      return held.has('Space');
-    },
-    cameraDrag() {
-      const out = { x: dragX, y: dragY };
-      dragX = 0;
-      dragY = 0;
-      return out;
-    },
-    wasPressed(name) {
-      return pressed.has(name);
-    },
-    wasClicked() {
-      return clicked;
-    },
-    mouseHeld() {
-      return mouseDown;
-    },
-    endFrame() {
-      pressed.clear();
-      clicked = false;
-    },
-    // Scripted input for the staged screenshot scenes and self-tests.
-    inject(keys, click) {
-      for (const key of keys) held.add(key);
-      if (click) clicked = true;
-    },
-    releaseAll() {
-      held.clear();
-    },
-  };
+  dispose() {
+    window.removeEventListener('keydown', this._onKeyDown);
+    window.removeEventListener('keyup', this._onKeyUp);
+    this._canvas.removeEventListener('mousedown', this._onMouseDown);
+    window.removeEventListener('mouseup', this._onMouseUp);
+    window.removeEventListener('mousemove', this._onMouseMove);
+    this._canvas.removeEventListener('wheel', this._onWheel);
+    this._canvas.removeEventListener('contextmenu', this._onContext);
+    window.removeEventListener('blur', this._onBlur);
+  }
 }
+
+// Default key bindings (shown on the start screen and in settings).
+export const BINDINGS = [
+  ['W A S D', 'Move / drive'],
+  ['Shift', 'Sprint / nitro'],
+  ['Space', 'Jump / handbrake'],
+  ['E', 'Enter / exit vehicle, steal car'],
+  ['F', 'Interact / pick up / talk'],
+  ['T', 'Street race (in a car) / taxi fare (on foot)'],
+  ['Q', 'Weapon wheel (hold)'],
+  ['1 – 4', 'Select weapon'],
+  ['R', 'Change radio station'],
+  ['C', 'Change camera'],
+  ['M', 'Mute audio'],
+  ['Esc / P', 'Pause'],
+  ['Mouse (hold)', 'Shoot'],
+  ['Right-drag', 'Orbit camera'],
+  ['Mouse wheel', 'Zoom camera'],
+];

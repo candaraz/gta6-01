@@ -1,54 +1,60 @@
-// Saving and loading: one JSON object in localStorage holding the player's
-// position, money, story progress, unlocked weapons, owned cars, medallions
-// and best trial times. Saving never throws — a full or blocked store just
-// means the session is the save.
+// Solmar Bay — save and load.
+// One job: persist the player's progress to localStorage and restore it, so
+// Continue actually resumes the game. The save is a plain JSON object; loading
+// it never throws (a corrupt save is ignored and a fresh game starts).
 
-import { SAVE_KEY } from './config.js';
+import { SAVE_KEY, SETTINGS_KEY } from './config.js';
 
 export function saveGame(state) {
   try {
     const data = {
-      version: 1,
+      version: 2,
       savedAt: Date.now(),
-      x: Math.round(state.x * 10) / 10,
-      z: Math.round(state.z * 10) / 10,
-      heading: state.heading,
-      money: state.money,
-      health: state.health,
+      cash: state.cash,
+      respect: state.respect,
+      missionIndex: state.missionIndex,
       missionsDone: state.missionsDone,
       weapons: state.weapons,
       ammo: state.ammo,
-      ownedCars: state.ownedCars,
-      medallions: state.medallions,
-      bestTimes: state.bestTimes,
+      mag: state.mag,
+      owned: state.owned,
+      upgrades: state.upgrades,
+      safehouses: state.safehouses,
+      radio: state.radio,
+      player: { x: state.playerX, z: state.playerZ, health: state.health, armour: state.armour },
+      car: state.car ? { cls: state.car.cls, x: state.car.x, z: state.car.z, heading: state.car.heading, hp: state.car.hp } : null,
     };
-    window.localStorage.setItem(SAVE_KEY, JSON.stringify(data));
+    localStorage.setItem(SAVE_KEY, JSON.stringify(data));
     return true;
-  } catch {
-    return false;
-  }
+  } catch { return false; }
 }
 
 export function loadGame() {
   try {
-    const raw = window.localStorage.getItem(SAVE_KEY);
+    const raw = localStorage.getItem(SAVE_KEY);
     if (!raw) return null;
     const data = JSON.parse(raw);
-    if (!data || data.version !== 1) return null;
+    if (!data || data.version !== 2) return null;
     return data;
-  } catch {
-    return null;
-  }
+  } catch { return null; }
 }
 
 export function hasSave() {
-  return loadGame() !== null;
+  try { return !!localStorage.getItem(SAVE_KEY); } catch { return false; }
 }
 
 export function clearSave() {
+  try { localStorage.removeItem(SAVE_KEY); } catch { /* ignore */ }
+}
+
+export function saveSettings(s) {
+  try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(s)); } catch { /* ignore */ }
+}
+
+export function loadSettings() {
   try {
-    window.localStorage.removeItem(SAVE_KEY);
-  } catch {
-    // Nothing to clear, or storage is unavailable.
-  }
+    const raw = localStorage.getItem(SETTINGS_KEY);
+    if (!raw) return null;
+    return JSON.parse(raw);
+  } catch { return null; }
 }
