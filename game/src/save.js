@@ -1,60 +1,67 @@
-// Solmar Bay — save and load.
-// One job: persist the player's progress to localStorage and restore it, so
-// Continue actually resumes the game. The save is a plain JSON object; loading
-// it never throws (a corrupt save is ignored and a fresh game starts).
+// save.js — save / load through localStorage. A save holds the money,
+// respect, mission progress, weapons, upgrades, collected coins and the
+// player's position, so Continue resumes exactly where the player left.
+import { SAVE_KEY } from './config.js';
 
-import { SAVE_KEY, SETTINGS_KEY } from './config.js';
-
-export function saveGame(state) {
+export function hasSave() {
   try {
-    const data = {
-      version: 2,
-      savedAt: Date.now(),
-      cash: state.cash,
-      respect: state.respect,
-      missionIndex: state.missionIndex,
-      missionsDone: state.missionsDone,
-      weapons: state.weapons,
-      ammo: state.ammo,
-      mag: state.mag,
-      owned: state.owned,
-      upgrades: state.upgrades,
-      safehouses: state.safehouses,
-      radio: state.radio,
-      player: { x: state.playerX, z: state.playerZ, health: state.health, armour: state.armour },
-      car: state.car ? { cls: state.car.cls, x: state.car.x, z: state.car.z, heading: state.car.heading, hp: state.car.hp } : null,
-    };
-    localStorage.setItem(SAVE_KEY, JSON.stringify(data));
-    return true;
-  } catch { return false; }
+    return !!localStorage.getItem(SAVE_KEY);
+  } catch (_) {
+    return false;
+  }
 }
 
-export function loadGame() {
+export function saveGame(G) {
+  const data = {
+    version: 2,
+    cash: G.cash,
+    respect: G.respect,
+    nextMission: G.missions.nextIndex,
+    completed: G.missions.completed,
+    owned: G.combat.owned,
+    ammo: G.combat.ammo,
+    upgrades: G.upgrades,
+    station: G.audio.station,
+    volume: G.audio.volume,
+    coinsTaken: G.city.coins.map((c) => c.taken),
+    player: {
+      x: G.player.x, z: G.player.z,
+      heading: G.player.heading,
+      health: G.player.health,
+      inVehicle: !!G.player.inVehicle,
+      vehicleCls: G.player.inVehicle ? G.player.inVehicle.cls : null,
+      vehicleX: G.player.inVehicle ? G.player.inVehicle.x : null,
+      vehicleZ: G.player.inVehicle ? G.player.inVehicle.z : null,
+      vehicleHeading: G.player.inVehicle ? G.player.inVehicle.heading : null,
+    },
+  };
+  try {
+    localStorage.setItem(SAVE_KEY, JSON.stringify(data));
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+export function loadSave() {
   try {
     const raw = localStorage.getItem(SAVE_KEY);
     if (!raw) return null;
     const data = JSON.parse(raw);
     if (!data || data.version !== 2) return null;
     return data;
-  } catch { return null; }
-}
-
-export function hasSave() {
-  try { return !!localStorage.getItem(SAVE_KEY); } catch { return false; }
+  } catch (_) {
+    return null;
+  }
 }
 
 export function clearSave() {
-  try { localStorage.removeItem(SAVE_KEY); } catch { /* ignore */ }
+  try { localStorage.removeItem(SAVE_KEY); } catch (_) {}
 }
 
-export function saveSettings(s) {
-  try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(s)); } catch { /* ignore */ }
-}
-
-export function loadSettings() {
-  try {
-    const raw = localStorage.getItem(SETTINGS_KEY);
-    if (!raw) return null;
-    return JSON.parse(raw);
-  } catch { return null; }
+// One line for the Continue button: cash, respect and mission progress.
+export function saveSummary() {
+  const s = loadSave();
+  if (!s) return null;
+  return `$${s.cash.toLocaleString('en-US')} · ${s.completed}/10 missions · respect ${s.respect}`;
 }

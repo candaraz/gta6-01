@@ -1,380 +1,577 @@
-// Solmar Bay — story missions and side activities.
-// One job: run the mission state machine. A mission is a list of stages from
-// config.js; each stage has a goal (reach a marker, talk, win a race, defeat
-// enemies, collect and deliver, survive a wanted level, steal a named car).
-// Every stage is forgiving — generous radii, no hard fail timers — so a mission
-// can always be finished by playing it. Side activities (races, taxi fares,
-// collectibles) run on the same stage machinery.
-
+// missions.js — the 10 story missions, the street-race and taxi side
+// activities, and the race engine. Story races keep the mission active;
+// side races and fares PAUSE the mission and restore it afterwards.
+// Hold-to-use stages read the held key, never the edge.
 import * as THREE from 'three';
-import { MISSIONS, RACES, SAFEHOUSES, WEAPONS } from './config.js';
-import { dist2D } from './random.js';
+import { MISSION_REWARDS, CIRCUITS } from './config.js';
+import { Vehicle, spawnBoat } from './vehicles.js';
+import { dist, clamp, angleDiff } from './random.js';
 
-export class Missions {
-  constructor(game) {
-    this.game = game;
-    this.index = 0; // current story mission
-    this.done = []; // completed mission ids
-    this.stage = 0;
-    this.stageState = null;
-    this.active = null; // {kind:'story'|'race'|'taxi', ...}
-    this.marker = null; // THREE.Mesh for the objective marker
-    this.markerRing = null;
-    this.coins = []; // collectibles
-    this.raceState = null;
-    this.taxiState = null;
-    this.holdTimer = 0;
-    this._buildMarker();
-    this._spawnCoins();
-  }
+export const MISSION_DEFS = [
+  {
+    id: 1, name: 'First Wheels', giver: 'Mara',
+    brief: 'Dario needs a van. Lift one and bring it to the drop-off.',
+    stages: [
+      { type: 'goto', x: -140, z: 5, r: 12, text: 'Meet Dario at the garage' },
+      { type: 'enter', cls: 'van', x: -140, z: 5, r: 14, text: 'Steal the Hauler van (E)' },
+      { type: 'drive', x: 140, z: 140, r: 12, text: 'Drive the van to the drop-off' },
+    ],
+  },
+  {
+    id: 2, name: 'The Pickup', giver: 'Dario',
+    brief: 'Grab the package from Ivy and run it to the Beach House.',
+    stages: [
+      { type: 'goto', x: 75, z: -145, r: 12, text: "Go to Ivy's Arms" },
+      { type: 'interact', x: 75, z: -145, r: 8, key: 'e', text: 'Pick up the package (E)' },
+      { type: 'drive', x: 215, z: 145, r: 12, text: 'Deliver the package to the Beach House' },
+    ],
+  },
+  {
+    id: 3, name: 'Bay Run', giver: 'Ivy',
+    brief: 'Win the Harbour Loop. A Comet GT is waiting at the start line.',
+    stages: [
+      { type: 'goto', x: 210, z: 0, r: 12, text: 'Get to the Harbour Loop start' },
+      { type: 'race', circuit: 'harbour', laps: 2, car: 'sports', text: 'Win the Harbour Loop (2 laps)' },
+    ],
+  },
+  {
+    id: 4, name: 'Dockside', giver: 'Sol',
+    brief: 'The Vultures are muscling the docks. Clear all six of them.',
+    stages: [
+      { type: 'goto', x: 240, z: 70, r: 14, text: 'Go to the docks' },
+      { type: 'kill', x: 240, z: 70, count: 6, label: 'Vulture', text: 'Take out the Vultures (0/6)' },
+    ],
+  },
+  {
+    id: 5, name: 'The Getaway', giver: 'Mara',
+    brief: 'The cops are coming. Get to 3 stars, then lose them at the Pier House.',
+    stages: [
+      { type: 'wanted', stars: 3, text: 'Raise your wanted level to 3 stars' },
+      { type: 'escape', x: -215, z: 215, r: 14, text: 'Lose the cops at the Pier House' },
+    ],
+  },
+  {
+    id: 6, name: 'Grand Theft Bay', giver: 'Ivy',
+    brief: 'A Comet GT is parked downtown. Take it and bring it to the garage.',
+    stages: [
+      { type: 'goto', x: 0, z: -70, r: 12, text: 'Go downtown' },
+      { type: 'enter', cls: 'sports', x: 0, z: -70, r: 14, text: 'Steal the Comet GT (E)' },
+      { type: 'drive', x: -140, z: 5, r: 12, text: 'Bring the Comet GT to the garage' },
+    ],
+  },
+  {
+    id: 7, name: 'Payback', giver: 'Dario',
+    brief: 'Ten Vultures, one plaza. Settle it.',
+    stages: [
+      { type: 'goto', x: -70, z: 0, r: 14, text: 'Go to the plaza' },
+      { type: 'kill', x: -70, z: 0, count: 10, label: 'Vulture', text: 'Take out the Vultures (0/10)' },
+    ],
+  },
+  {
+    id: 8, name: 'The Heist', giver: 'Sol',
+    brief: 'Crack the vault downtown, then run — the whole city will be after you.',
+    stages: [
+      { type: 'goto', x: 70, z: -70, r: 12, text: 'Go to the bank' },
+      { type: 'hold', x: 70, z: -70, r: 9, seconds: 8, key: 'f', text: 'Hold F to crack the vault' },
+      { type: 'escape', x: -245, z: -245, r: 14, text: 'Escape to Mara’s Place (4 stars)' },
+    ],
+  },
+  {
+    id: 9, name: 'High Tide', giver: 'Mara',
+    brief: 'A Marlin is waiting at the pier. Win the bay race.',
+    stages: [
+      { type: 'goto', x: 300, z: 90, r: 12, text: 'Go to the pier' },
+      { type: 'boatrace', laps: 1, text: 'Win the bay race (1 lap)' },
+    ],
+  },
+  {
+    id: 10, name: 'King of the Bay', giver: 'Sol',
+    brief: 'Win the Downtown Dash, then finish the Vultures for good.',
+    stages: [
+      { type: 'goto', x: 0, z: -178, r: 16, text: 'Meet Sol by the Solmar Tower' },
+      { type: 'race', circuit: 'downtown', laps: 3, car: 'sports', text: 'Win the Downtown Dash (3 laps)' },
+      { type: 'kill', x: 0, z: -70, count: 12, label: 'Vulture', text: 'Take out the Vultures (0/12)' },
+    ],
+  },
+];
 
-  _buildMarker() {
-    const g = this.game;
-    const cyl = new THREE.Mesh(
-      new THREE.CylinderGeometry(2.2, 2.2, 14, 20, 1, true),
-      new THREE.MeshBasicMaterial({ color: 0xffd23e, transparent: true, opacity: 0.22, side: THREE.DoubleSide }),
-    );
-    cyl.position.y = 7;
-    g.scene.add(cyl);
-    const ring = new THREE.Mesh(
-      new THREE.TorusGeometry(2.4, 0.18, 8, 28),
-      new THREE.MeshBasicMaterial({ color: 0xffd23e }),
-    );
-    ring.rotation.x = Math.PI / 2;
-    ring.position.y = 0.25;
-    g.scene.add(ring);
-    this.marker = cyl; this.markerRing = ring;
-    this.marker.visible = false; this.markerRing.visible = false;
-  }
-
-  _spawnCoins() {
-    // 20 Bay Coins hidden around the city, worth $150 + 10 respect each.
-    const spots = [
-      [-100, -100], [60, -130], [130, -60], [-160, -30], [30, 80], [-60, 130],
-      [170, 20], [-130, 160], [90, 170], [-30, -160], [200, 90], [-190, 60],
-      [10, 130], [-80, -60], [150, -130], [-170, -130], [60, 30], [-20, 180],
-      [190, 160], [-110, 30],
-    ];
-    for (const [x, z] of spots) {
-      const m = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.7, 0.7, 0.15, 14),
-        new THREE.MeshBasicMaterial({ color: 0xffd23e }),
-      );
-      m.rotation.x = Math.PI / 2;
-      m.position.set(x, 1.2, z);
-      this.game.scene.add(m);
-      this.coins.push({ mesh: m, x, z, taken: false });
-    }
-  }
-
-  currentMission() { return MISSIONS[this.index] ?? null; }
-  currentStage() {
-    const m = this.currentMission();
-    return m ? m.stages[this.stage] : null;
-  }
-  objectiveText() {
-    if (this.raceState) return this.raceState.text ?? '';
-    if (this.active?.kind === 'taxi') return this.taxiState?.text ?? '';
-    const m = this.currentMission();
-    if (!m) return 'All story missions complete — Bay King. Free roam!';
-    const s = this.currentStage();
-    if (!s) return m.name + ' — done';
-    return `${m.name}: ${s.text}`;
-  }
-
-  startStory() {
-    const m = this.currentMission();
-    if (!m) return;
-    this.active = { kind: 'story', mission: m };
-    this.stage = 0;
-    this._enterStage();
-    this.game.hud.banner(`${m.name}`, `${m.giver}: ${m.brief}`);
-    this.game.audio.pickup();
-  }
-
-  _enterStage() {
-    const s = this.currentStage();
-    this.stageState = null;
-    this.holdTimer = 0;
-    if (!s) return;
-    const g = this.game;
-    if (s.type === 'goto' || s.type === 'talk' || s.type === 'collect' || s.type === 'deliver' || s.type === 'stealNamed' || s.type === 'boat') {
-      this._showMarker(s.x, s.z);
-    } else if (s.type === 'kill') {
-      this._showMarker(s.x, s.z);
-      const spawned = g.combat.spawnEnemies(s.x, s.z, s.count, this.currentMission().id);
-      this.stageState = { spawned, killed: 0 };
-      s.text = s.text.replace(/\(\d+\/\d+\)/, `(0/${s.count})`);
-    } else if (s.type === 'survive') {
-      this._showMarker(s.x, s.z);
-      g.police.setStars(s.wanted ?? 2);
-    } else if (s.type === 'race') {
-      this._startRace(s.race, s.laps ?? 2, s.boat ?? false, s.text, true);
-    } else if (s.type === 'steal') {
-      this._hideMarker();
-    }
-    // The Marlin is moored at the marker: spawn it if it is not there yet,
-    // so the stage is always completable (there is no boat in traffic).
-    if (s.type === 'boat' && !g.vehicles.some((v) => v.cls === 'boat' && !v.dead)) {
-      g.spawnCar('boat', s.x, s.z, 0, { driver: null });
-    }
-  }
-
-  _showMarker(x, z) {
-    this.marker.position.set(x, 7, z);
-    this.markerRing.position.set(x, 0.25, z);
-    this.marker.visible = true; this.markerRing.visible = true;
-    this.markerPos = { x, z };
-  }
-  _hideMarker() { this.marker.visible = false; this.markerRing.visible = false; this.markerPos = null; }
-
-  // --- races ---
-  _raceWaypoints(raceId, boat) {
-    if (boat) return [{ x: 190, z: 210 }, { x: 240, z: 260 }, { x: 120, z: 280 }, { x: 60, z: 240 }];
-    if (raceId === 'harbour') return [{ x: 130, z: 130 }, { x: 190, z: 60 }, { x: 190, z: -60 }, { x: 60, z: -60 }];
-    if (raceId === 'coast') return [{ x: 60, z: 180 }, { x: 190, z: 180 }, { x: 190, z: 60 }, { x: 60, z: 60 }];
-    return [{ x: -60, z: -60 }, { x: 60, z: -60 }, { x: 60, z: 60 }, { x: -60, z: 60 }];
-  }
-  _startRace(raceId, laps, boat, text, isStory = false) {
-    const g = this.game;
-    const waypoints = this._raceWaypoints(raceId, boat);
-    // A car race on foot is unwinnable: give the player a sports car to start in.
-    if (!boat && !g.playerCar) {
-      const car = g.spawnCar('sports', g.player.x + 4, g.player.z, 0, { driver: 'player' });
-      g.player.enterVehicle(car);
-      g.playerCar = car;
-    }
-    // 3 AI racers in sports/muscle cars, starting just behind the player
-    const racers = [];
+// A race: waypoint loop, 3 AI opponents, position by progress.
+export class Race {
+  constructor(scene, city, circuitKey, laps, boat, playerVehicle) {
+    this.scene = scene;
+    this.city = city;
+    this.circuit = city.circuits[circuitKey];
+    this.laps = laps;
+    this.boat = boat;
+    this.points = this.circuit.points;
+    this.playerVehicle = playerVehicle;
+    this.playerCp = 0;
+    this.playerLap = 0;
+    this.finished = false;
+    this.playerPlace = 0;
+    this.racers = [];
+    this.time = 0;
+    const start = this.points[0];
+    const dir = Math.atan2(this.points[1][0] - start[0], this.points[1][1] - start[1]);
     for (let i = 0; i < 3; i++) {
-      const cls = i === 0 ? 'sports' : i === 1 ? 'muscle' : 'sports';
-      const v = g.spawnCar(cls, g.player.x - 6 - i * 5, g.player.z - 4, 0, { driver: 'racer' });
-      racers.push({ car: v, wp: 0, lap: 0, finished: false });
+      const bx = start[0] - Math.sin(dir) * (6 + i * 7);
+      const bz = start[1] - Math.cos(dir) * (6 + i * 7);
+      const cls = boat ? 'boat' : (i === 0 ? 'sports' : i === 1 ? 'muscle' : 'sedan');
+      const v = new Vehicle(scene, cls, bx, bz, dir, { driver: 'racer' });
+      v.raceCp = 0;
+      v.raceLap = 0;
+      v.racePace = 0.68 + i * 0.03 + Math.random() * 0.02;
+      v.raceDone = false;
+      this.racers.push(v);
     }
-    this.raceState = { raceId, laps, boat, waypoints, wp: 0, lap: 1, racers, text, place: 1, done: false, story: isStory };
-    // A story race keeps the mission as the active kind, so finishing it
-    // advances the mission. A side race pauses the story mission: it becomes
-    // kind 'race', and finishing it restores whatever was active before.
-    if (isStory) {
-      // active stays 'story'
-    } else {
-      this._savedActive = this.active;
-      this.active = { kind: 'race', raceId };
-    }
-    this._showMarker(waypoints[0].x, waypoints[0].z);
   }
-  _updateRace(dt) {
-    const g = this.game;
-    const r = this.raceState;
-    if (!r || r.done) return;
-    const px = g.playerCar ? g.playerCar.x : g.player.x;
-    const pz = g.playerCar ? g.playerCar.z : g.player.z;
-    const wp = r.waypoints[r.wp];
-    if (dist2D(px, pz, wp.x, wp.z) < 12) {
-      r.wp++;
-      if (r.wp >= r.waypoints.length) {
-        r.wp = 0; r.lap++;
-        if (r.lap > r.laps) { this._finishRace(true); return; }
-      }
-      const next = r.waypoints[r.wp];
-      this._showMarker(next.x, next.z);
-      g.audio.pickup();
-    }
-    // AI racers drive the waypoint loop
-    let ahead = 0;
-    for (const racer of r.racers) {
-      if (racer.finished) { ahead++; continue; }
-      const w = r.waypoints[racer.wp];
-      const dx = w.x - racer.car.x, dz = w.z - racer.car.z;
-      const d = Math.hypot(dx, dz);
-      if (d < 10) {
-        racer.wp++;
-        if (racer.wp >= r.waypoints.length) {
-          racer.wp = 0; racer.lap++;
-          if (racer.lap > r.laps) { racer.finished = true; ahead++; continue; }
+
+  // Total progress in checkpoints (lap * points + cp) for a racer.
+  _progress(v) {
+    return (v.raceLap || 0) * this.points.length + (v.raceCp || 0);
+  }
+
+  playerProgress() {
+    return this.playerLap * this.points.length + this.playerCp;
+  }
+
+  update(dt, player) {
+    this.time += dt;
+    if (this.finished) return;
+    // Player checkpoint: pass within 18 m of the next point, in order.
+    const pv = player.inVehicle || player;
+    const next = this.points[(this.playerCp + 1) % this.points.length];
+    if (dist(pv.x, pv.z, next[0], next[1]) < 18) {
+      this.playerCp++;
+      if (this.playerCp >= this.points.length) {
+        this.playerCp = 0;
+        this.playerLap++;
+        if (this.playerLap >= this.laps) {
+          this.finished = true;
+          this.playerPlace = this._placeAtFinish();
         }
       }
-      const want = Math.atan2(dx, dz);
-      let diff = want - racer.car.heading;
-      while (diff > Math.PI) diff -= Math.PI * 2;
-      while (diff < -Math.PI) diff += Math.PI * 2;
-      racer.car.drive(1, Math.max(-1, Math.min(1, diff * 1.5)), false, dt, false);
-      const prog = racer.lap * r.waypoints.length + racer.wp;
-      const myProg = (r.lap - 1) * r.waypoints.length + r.wp;
-      if (prog > myProg) ahead++;
     }
-    r.place = ahead + 1;
-    r.text = `${r.raceId === 'harbour' ? 'Harbour Loop' : r.raceId === 'coast' ? 'Coast Run' : 'Downtown Dash'} — Lap ${Math.min(r.lap, r.laps)}/${r.laps} — P${r.place}/4`;
-    // race fail: player wrecked their car
-    if (g.playerCar && g.playerCar.dead) this._finishRace(false);
-  }
-  _finishRace(won) {
-    const g = this.game;
-    const r = this.raceState;
-    r.done = true;
-    for (const racer of r.racers) { racer.car.driver = null; }
-    this.raceState = null;
-    this._hideMarker();
-    if (won) {
-      const prize = RACES.find((x) => x.id === r.raceId)?.prize ?? 1200;
-      g.addCash(prize); g.addRespect(120);
-      g.hud.banner('Race won!', `+$${prize}  +120 respect`);
-      g.audio.missionDone();
-      // only a story race advances the mission; a side race just pays
-      if (r.story) this._advanceStage();
-    } else {
-      g.hud.banner('Race lost', 'Your car was wrecked — try again.');
-      g.audio.failed();
-      if (r.story) this._restartStage();
+    // AI racers follow the waypoints.
+    for (const r of this.racers) {
+      if (r.raceDone || r.dead) continue;
+      const target = this.points[(r.raceCp + 1) % this.points.length];
+      const wantHeading = Math.atan2(target[0] - r.x, target[1] - r.z);
+      const steer = clamp(angleDiff(r.heading, wantHeading) * 1.8, -1, 1);
+      const cruise = r.topSpeed * r.racePace;
+      const throttle = r.speed < cruise ? 0.8 : 0.1;
+      r.drive(dt, steer, throttle, this.city, [this.playerVehicle, ...this.racers].filter(Boolean));
+      if (dist(r.x, r.z, target[0], target[1]) < 18) {
+        r.raceCp++;
+        if (r.raceCp >= this.points.length) {
+          r.raceCp = 0;
+          r.raceLap++;
+          if (r.raceLap >= this.laps) r.raceDone = true;
+        }
+      }
     }
-    // a side race restores whatever was active before it (usually the story
-    // mission, paused); a story race leaves the mission active
-    if (!r.story) this.active = this._savedActive ?? null;
-  }
-  startSideRace(raceId) {
-    const race = RACES.find((r) => r.id === raceId);
-    if (!race || this.game.cash < race.fee) return false;
-    this.game.addCash(-race.fee);
-    this._startRace(raceId, race.laps, false, `Win the ${race.name}`);
-    return true;
-  }
-
-  // --- taxi fares ---
-  startTaxi() {
-    const g = this.game;
-    const ped = g.traffic.nearestPed(g.player.x, g.player.z, 30);
-    if (!ped) return false;
-    const dest = g.city.roadGraph[Math.floor(Math.random() * g.city.roadGraph.length)];
-    this.taxiState = { ped, dest, text: 'Taxi fare: drive the passenger to the marker', timer: 90 };
-    this.active = { kind: 'taxi' };
-    this._showMarker(dest.x, dest.z);
-    ped.fleeing = false;
-    return true;
-  }
-  _updateTaxi(dt) {
-    const g = this.game;
-    const t = this.taxiState;
-    if (!t) return;
-    t.timer -= dt;
-    const px = g.playerCar ? g.playerCar.x : g.player.x;
-    const pz = g.playerCar ? g.playerCar.z : g.player.z;
-    t.text = `Taxi fare: ${Math.ceil(t.timer)}s left — reach the marker`;
-    if (dist2D(px, pz, t.dest.x, t.dest.z) < 10) {
-      const tip = Math.max(50, Math.round(t.timer * 4));
-      g.addCash(150 + tip); g.addRespect(25);
-      g.hud.banner('Fare complete!', `+$${150 + tip}  +25 respect`);
-      g.audio.missionDone();
-      this.taxiState = null; this.active = null; this._hideMarker();
-    } else if (t.timer <= 0) {
-      g.hud.banner('Fare failed', 'The passenger gave up.');
-      this.taxiState = null; this.active = null; this._hideMarker();
+    // If every racer finished before the player, the player cannot win.
+    if (this.racers.every((r) => r.raceDone)) {
+      this.finished = true;
+      this.playerPlace = 4;
     }
   }
 
-  _advanceStage() {
-    this.stage++;
-    const m = this.currentMission();
-    if (!m || this.stage >= m.stages.length) { this._completeMission(); return; }
-    this._enterStage();
-  }
-  _restartStage() { this._enterStage(); }
-
-  _completeMission() {
-    const g = this.game;
-    const m = this.currentMission();
-    if (!m) return;
-    this.done.push(m.id);
-    g.addCash(m.reward.cash);
-    g.addRespect(m.reward.respect);
-    if (m.grant) {
-      g.combat.giveWeapon(m.grant, 64);
-      g.hud.toast(`Mara gave you a ${WEAPONS[m.grant].label} — press 2 to use it`);
+  _placeAtFinish() {
+    let place = 1;
+    const mine = this.playerProgress();
+    for (const r of this.racers) {
+      if (this._progress(r) > mine) place++;
+      else if (r.raceDone) place++;
     }
-    g.hud.banner('Mission complete!', `${m.name}  +$${m.reward.cash}  +${m.reward.respect} respect`);
-    g.audio.missionDone();
-    g.police.setStars(0);
-    this.index++;
+    return place;
+  }
+
+  positionText() {
+    const total = this.points.length * this.laps;
+    return `P${this._livePlace()}/4 · Lap ${Math.min(this.playerLap + 1, this.laps)}/${this.laps}`;
+  }
+
+  _livePlace() {
+    let place = 1;
+    const mine = this.playerProgress();
+    for (const r of this.racers) if (this._progress(r) > mine) place++;
+    return place;
+  }
+
+  dispose() {
+    for (const r of this.racers) r.remove(this.scene);
+    this.racers = [];
+  }
+}
+
+// Runs the story and the side activities. The game passes a ctx with the
+// live objects it needs; the manager calls back for rewards and messages.
+export class MissionManager {
+  constructor(scene, city) {
+    this.scene = scene;
+    this.city = city;
+    this.nextIndex = 0;
     this.active = null;
-    this.stage = 0; // the next mission starts at its own stage 0
-    this._hideMarker();
-    if (this.currentMission()) {
-      g.hud.toast(`Next mission: ${this.currentMission().name} — press M to start it (or walk to the marker)`);
+    this.paused = null;
+    this.side = null;
+    this.completed = 0;
+    this.raceCycle = 0;
+    this._spawned = [];
+    // Objective beacon: a light pillar and a floating diamond.
+    const beam = new THREE.Mesh(
+      new THREE.CylinderGeometry(1.6, 1.6, 60, 12, 1, true),
+      new THREE.MeshBasicMaterial({ color: 0xffd24a, transparent: true, opacity: 0.28, side: THREE.DoubleSide, depthWrite: false })
+    );
+    beam.position.y = 30;
+    const diamond = new THREE.Mesh(
+      new THREE.OctahedronGeometry(1.6),
+      new THREE.MeshBasicMaterial({ color: 0xffd24a })
+    );
+    diamond.position.y = 7;
+    this.marker = new THREE.Group();
+    this.marker.add(beam);
+    this.marker.add(diamond);
+    this.marker.visible = false;
+    scene.add(this.marker);
+    this.markerPos = null;
+    this.objectiveText = 'Welcome to Solmar Bay';
+    this.time = 0;
+  }
+
+  allDone() {
+    return this.nextIndex >= MISSION_DEFS.length;
+  }
+
+  currentDef() {
+    return MISSION_DEFS[this.nextIndex];
+  }
+
+  // Where the next mission starts (its first located stage, else Mara's).
+  startPosition() {
+    const def = this.currentDef();
+    if (!def) return null;
+    for (const s of def.stages) if (s.x !== undefined) return { x: s.x, z: s.z, r: s.r || 12 };
+    return { x: -245, z: -245, r: 12 };
+  }
+
+  startMission(ctx) {
+    const def = this.currentDef();
+    if (!def || this.active || this.side) return false;
+    this.active = { def, stageIdx: 0, hold: 0, spawned: [], race: null, raceLostAt: 0 };
+    ctx.onMessage(`${def.name} — ${def.brief}`);
+    this._beginStage(ctx);
+    return true;
+  }
+
+  _beginStage(ctx) {
+    const a = this.active;
+    const s = a.def.stages[a.stageIdx];
+    a.hold = 0;
+    a.spawned = [];
+    if (s.type === 'enter' && s.cls) {
+      const v = new Vehicle(this.scene, s.cls, s.x + 4, s.z + 4, Math.PI / 2, { driver: null, owned: true });
+      ctx.addVehicle(v);
+      a.spawned.push(v);
+    } else if (s.type === 'kill') {
+      a.spawned = ctx.combat.spawnEnemies(s.x, s.z, s.count, s.label);
+    } else if (s.type === 'race') {
+      const start = this.city.circuits[s.circuit].points[0];
+      let car = ctx.player.inVehicle;
+      // A slow car cannot win: a proper race car waits at the start line.
+      if (!car || car.def.speed < 34) {
+        car = new Vehicle(this.scene, s.car || 'sports', start[0], start[1] - 8, 0, { driver: null, owned: true });
+        ctx.addVehicle(car);
+        a.spawned.push(car);
+        ctx.onMessage(`A ${car.def.name} is waiting at the start line — get in (E).`);
+      }
+      a.race = new Race(this.scene, this.city, s.circuit, s.laps, false, car);
+    } else if (s.type === 'boatrace') {
+      const boat = spawnBoat(this.scene, 300, 252, 0);
+      ctx.addVehicle(boat);
+      a.spawned.push(boat);
+      ctx.onMessage('The Marlin is waiting at the pier — board it (E).');
+      a.race = new Race(this.scene, this.city, 'harbour', s.laps, true, boat);
+      // Bay buoys instead of the harbour loop.
+      a.race.points = [[-200, 260], [0, 305], [200, 260], [200, 320], [-200, 320]];
+      a.race.circuit = { name: 'Bay Circuit', points: a.race.points };
+    } else if (s.type === 'wanted') {
+      ctx.police.setStars(s.stars);
+    }
+    this._updateObjective(ctx);
+  }
+
+  _stageText(ctx) {
+    const a = this.active;
+    if (!a) return '';
+    const s = a.def.stages[a.stageIdx];
+    if (s.type === 'kill') {
+      const left = a.spawned.filter((e) => !e.dead).length;
+      return s.text.replace(/\(\d+\/\d+\)/, `(${s.count - left}/${s.count})`);
+    }
+    if (s.type === 'hold') return `${s.text} (${Math.floor(a.hold)}/${s.seconds}s)`;
+    if (s.type === 'race' || s.type === 'boatrace') return a.race ? a.race.positionText() + ' — ' + s.text : s.text;
+    return s.text;
+  }
+
+  _updateObjective(ctx) {
+    if (this.side) {
+      this.objectiveText = this.side.text;
+      this.markerPos = this.side.markerPos;
+      return;
+    }
+    if (this.active) {
+      const a = this.active;
+      const s = a.def.stages[a.stageIdx];
+      this.objectiveText = `${a.def.name}: ${this._stageText(ctx)}`;
+      if (s.type === 'race' || s.type === 'boatrace') {
+        if (a.race) {
+          const next = a.race.points[(a.race.playerCp + 1) % a.race.points.length];
+          this.markerPos = { x: next[0], z: next[1] };
+        }
+      } else if (s.x !== undefined) {
+        this.markerPos = { x: s.x, z: s.z };
+      } else {
+        this.markerPos = null;
+      }
+      return;
+    }
+    if (!this.allDone()) {
+      const def = this.currentDef();
+      const sp = this.startPosition();
+      this.objectiveText = `Next mission: ${def.name} — go to the marker, press E`;
+      this.markerPos = sp;
+      return;
+    }
+    this.objectiveText = 'ALL MISSIONS DONE — you are the Bay King';
+    this.markerPos = null;
+  }
+
+  _advance(ctx) {
+    const a = this.active;
+    a.stageIdx++;
+    if (a.stageIdx >= a.def.stages.length) {
+      const reward = MISSION_REWARDS[a.def.id - 1];
+      ctx.onReward(reward.cash, reward.respect, `${a.def.name} complete: +$${reward.cash}, +${reward.respect} respect`);
+      ctx.audio.missionDone();
+      if (a.def.id === 3) {
+        ctx.combat.giveWeapon('smg', 96);
+        ctx.onMessage('Ivy gave you an SMG (press 2).');
+      }
+      if (a.race) { a.race.dispose(); a.race = null; }
+      this.completed++;
+      this.nextIndex++;
+      this.active = null;
     } else {
-      g.hud.banner('BAY KING', 'Every story mission complete. The Bay is yours.');
+      this._beginStage(ctx);
     }
+    this._updateObjective(ctx);
   }
 
-  // Called when the player dies: the mission restarts from its current stage.
-  onPlayerDeath() {
-    if (this.active?.kind === 'story') {
-      this.game.combat.clearGroup(this.currentMission()?.id);
-      this._enterStage();
-    }
+  // The active mission's current stage wants this E press (interact).
+  wantsInteract(ctx) {
+    if (!this.active) return false;
+    const s = this.active.def.stages[this.active.stageIdx];
+    if (s.type !== 'interact') return false;
+    return dist(ctx.player.x, ctx.player.z, s.x, s.z) < s.r;
   }
 
-  update(dt) {
-    const g = this.game;
-    // coins
-    for (const c of this.coins) {
-      if (c.taken) continue;
-      c.mesh.rotation.y += dt * 2;
-      const px = g.playerCar ? g.playerCar.x : g.player.x;
-      const pz = g.playerCar ? g.playerCar.z : g.player.z;
-      if (dist2D(px, pz, c.x, c.z) < 2.5) {
-        c.taken = true; c.mesh.visible = false;
-        g.addCash(150); g.addRespect(10);
-        g.hud.toast('Bay Coin +$150  +10 respect');
-        g.audio.pickup();
-      }
+  // Is the player at the next mission's start marker? (E starts it there,
+  // and that beats entering a nearby car.)
+  nearStartMarker(ctx) {
+    if (this.active || this.side || this.allDone()) return false;
+    const sp = this.startPosition();
+    if (!sp) return false;
+    return dist(ctx.player.x, ctx.player.z, sp.x, sp.z) < (sp.r || 12);
+  }
+
+  // Start the next mission from its marker (called by the game's E key).
+  tryStartAtMarker(ctx) {
+    if (this.active || this.side || this.allDone()) return false;
+    const sp = this.startPosition();
+    if (!sp) return false;
+    if (dist(ctx.player.x, ctx.player.z, sp.x, sp.z) < (sp.r || 12)) {
+      return this.startMission(ctx);
     }
-    if (this.raceState) this._updateRace(dt);
-    if (this.taxiState) this._updateTaxi(dt);
-    if (!this.active || this.active.kind !== 'story') return;
-    const m = this.currentMission();
-    const s = this.currentStage();
-    if (!m || !s) return;
-    const px = g.playerCar ? g.playerCar.x : g.player.x;
-    const pz = g.playerCar ? g.playerCar.z : g.player.z;
-    const inCar = !!g.playerCar;
+    return false;
+  }
+
+  update(dt, ctx) {
+    this.time += dt;
+    if (this.side) {
+      this._updateSide(dt, ctx);
+      this._updateObjective(ctx);
+      this._animateMarker(dt);
+      return;
+    }
+    if (!this.active) {
+      // The next mission waits at its start marker (E starts it).
+      this._updateObjective(ctx);
+      this._animateMarker(dt);
+      return;
+    }
+    const a = this.active;
+    const s = a.def.stages[a.stageIdx];
+    const p = ctx.player;
+    const at = (x, z, r) => dist(p.x, p.z, x, z) < r;
+    let done = false;
     switch (s.type) {
-      case 'steal':
-        if (inCar) this._advanceStage();
-        break;
       case 'goto':
-      case 'deliver':
-        if (dist2D(px, pz, s.x, s.z) < s.radius) this._advanceStage();
-        break;
-      case 'talk':
-      case 'collect':
-        // press F once to grab/talk; hold F for the whole hold time when the
-        // stage asks for it (down, not hit — hit is only true on one frame)
-        if (dist2D(px, pz, s.x, s.z) < s.radius && (s.hold ? g.input.down('KeyF') : g.input.hit('KeyF'))) {
-          if (s.hold) {
-            this.holdTimer += dt;
-            if (this.holdTimer >= s.hold) this._advanceStage();
-          } else this._advanceStage();
-        } else if (s.hold) this.holdTimer = 0;
-        break;
-      case 'kill': {
-        const killed = (this.stageState?.spawned ?? []).filter((e) => e.dead).length;
-        s.text = s.text.replace(/\(\d+\/\d+\)/, `(${killed}/${s.count})`);
-        if (killed >= s.count) this._advanceStage();
-        break;
-      }
-      case 'survive':
-        if (dist2D(px, pz, s.x, s.z) < s.radius) {
-          g.police.setStars(0);
-          this._advanceStage();
+      case 'drive':
+      case 'escape':
+        if (at(s.x, s.z, s.r)) {
+          if (s.type === 'escape') ctx.police.clear();
+          done = true;
         }
         break;
-      case 'stealNamed':
-        if (inCar && g.playerCar.cls === s.vehicle) this._advanceStage();
+      case 'interact':
+        if (at(s.x, s.z, s.r) && ctx.input.wasHit(s.key || 'e')) done = true;
         break;
-      case 'boat':
-        if (inCar && g.playerCar.cls === 'boat') this._advanceStage();
+      case 'enter':
+        if (p.inVehicle && (!s.cls || p.inVehicle.cls === s.cls)) done = true;
+        break;
+      case 'kill':
+        if (a.spawned.every((e) => e.dead)) done = true;
+        break;
+      case 'hold':
+        if (at(s.x, s.z, s.r) && ctx.input.isDown(s.key || 'f')) {
+          a.hold += dt;
+          if (a.hold >= s.seconds) {
+            done = true;
+            if (a.def.id === 8) ctx.police.setStars(4);
+          }
+        } else {
+          a.hold = Math.max(0, a.hold - dt * 2);
+        }
+        break;
+      case 'wanted':
+        if (ctx.police.stars >= s.stars) done = true;
         break;
       case 'race':
-        break; // handled by _updateRace
+      case 'boatrace': {
+        if (!a.race) break;
+        a.race.update(dt, p);
+        if (a.race.finished) {
+          if (a.race.playerPlace === 1) {
+            ctx.onMessage(a.race.boat ? 'Bay race won!' : 'Race won!');
+            a.race.dispose();
+            a.race = null;
+            done = true;
+          } else {
+            ctx.onMessage(`Finished P${a.race.playerPlace} — race restarts.`);
+            a.race.dispose();
+            a.race = null;
+            this._beginStage(ctx); // re-spawn the race
+          }
+        }
+        break;
+      }
+      default:
+        break;
     }
+    if (done) this._advance(ctx);
+    else this._updateObjective(ctx);
+    this._animateMarker(dt);
+  }
+
+  _animateMarker(dt) {
+    if (!this.markerPos) { this.marker.visible = false; return; }
+    this.marker.visible = true;
+    this.marker.position.set(this.markerPos.x, 0, this.markerPos.z);
+    this.marker.children[1].position.y = 7 + Math.sin(this.time * 3) * 0.8;
+    this.marker.children[1].rotation.y += dt * 2;
+  }
+
+
+  // ---- side activities: T starts a street race (in a car) or a taxi
+  // fare (on foot). Both PAUSE the story mission and restore it after.
+  trySideActivity(ctx) {
+    if (this.side) return false;
+    const p = ctx.player;
+    if (p.inVehicle) {
+      // Street race: cycle the three circuits. $200 entry fee.
+      if (ctx.cash < 200) { ctx.onMessage('Street race needs a $200 entry fee.'); return false; }
+      ctx.onSpend(200);
+      const keys = ['harbour', 'downtown', 'coast'];
+      const key = keys[this.raceCycle % keys.length];
+      this.raceCycle++;
+      this.paused = this.active;
+      this.active = null;
+      const race = new Race(this.scene, this.city, key, CIRCUITS[key].laps, false, p.inVehicle);
+      this.side = { type: 'race', race, circuit: key, text: `Street race: ${CIRCUITS[key].name} — win $1200 + $500`, markerPos: null };
+      ctx.onMessage(`Street race: ${CIRCUITS[key].name} ($200 fee). Win it!`);
+      return true;
+    }
+    // Taxi fare: a cab and a passenger appear nearby.
+    const cab = new Vehicle(this.scene, 'taxi', p.x + 8, p.z + 8, 0, { driver: null });
+    ctx.addVehicle(cab);
+    const dests = [[140, 140], [-140, -70], [210, -140], [0, 210], [-210, -210]];
+    const dest = dests[Math.floor(Math.random() * dests.length)];
+    this.paused = this.active;
+    this.active = null;
+    this.side = {
+      type: 'taxi', phase: 'pickup', cab, dest,
+      text: 'Taxi fare: get in the cab, then pick up the passenger',
+      markerPos: { x: p.x + 14, z: p.z + 14 },
+      passenger: { x: p.x + 14, z: p.z + 14 },
+    };
+    ctx.onMessage('Taxi fare: get in the cab (E).');
+    return true;
+  }
+
+  _updateSide(dt, ctx) {
+    const s = this.side;
+    const p = ctx.player;
+    if (s.type === 'race') {
+      s.race.update(dt, p);
+      s.text = `Street race: ${CIRCUITS[s.circuit].name} — ${s.race.positionText()}`;
+      const next = s.race.points[(s.race.playerCp + 1) % s.race.points.length];
+      s.markerPos = { x: next[0], z: next[1] };
+      if (s.race.finished) {
+        if (s.race.playerPlace === 1) {
+          ctx.onReward(1700, 120, 'Street race won: +$1700, +120 respect');
+          ctx.audio.missionDone();
+        } else {
+          ctx.onMessage(`Street race: finished P${s.race.playerPlace}. Fee lost.`);
+        }
+        s.race.dispose();
+        this.side = null;
+        this.active = this.paused;
+        this.paused = null;
+        if (this.active) this._updateObjective(ctx);
+      }
+      return;
+    }
+    // Taxi fare.
+    if (s.phase === 'pickup') {
+      if (p.inVehicle) {
+        s.phase = 'ride';
+        s.text = 'Taxi fare: drive the passenger to the marker';
+        s.markerPos = { x: s.dest[0], z: s.dest[1] };
+        ctx.onMessage('Passenger aboard — drive to the marker.');
+      }
+      return;
+    }
+    if (s.phase === 'ride') {
+      if (!p.inVehicle) { s.phase = 'pickup'; s.markerPos = s.passenger; return; }
+      if (dist(p.x, p.z, s.dest[0], s.dest[1]) < 12) {
+        const fare = 60 + Math.round(dist(s.passenger.x, s.passenger.z, s.dest[0], s.dest[1]) * 1.5);
+        ctx.onReward(fare, 20, `Taxi fare complete: +$${fare}, +20 respect`);
+        ctx.audio.pickup();
+        this.side = null;
+        this.active = this.paused;
+        this.paused = null;
+        if (this.active) this._updateObjective(ctx);
+      }
+    }
+  }
+
+  cancelSide(ctx) {
+    if (!this.side) return;
+    if (this.side.type === 'race' && this.side.race) this.side.race.dispose();
+    this.side = null;
+    this.active = this.paused;
+    this.paused = null;
+    this._updateObjective(ctx);
   }
 }

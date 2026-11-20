@@ -1,203 +1,234 @@
-// Solmar Bay — HUD, minimap and menus.
-// One job: everything the player reads. A live minimap (canvas, top-down: roads,
-// player, cars, police, mission marker), wanted stars, health/armour, cash,
-// respect, mission objective, speed, weapon and radio — plus the start screen,
-// pause menu, settings, garage/shop panels and banners. All DOM, no WebGL.
-
-import { WEAPONS } from './config.js';
-import { BINDINGS } from './input.js';
-import { respectRank } from './garage.js';
+// hud.js — the HUD (cash, respect, rank, wanted stars, health, weapon,
+// speed, radio, objective), the live minimap, message toasts, and the
+// start / pause / settings menus. The HUD is visible from the first
+// frame of play — never display:none while playing.
+import { RANKS, STATIONS } from './config.js';
 
 export class HUD {
-  constructor(game) {
-    this.game = game;
+  constructor() {
+    const root = document.getElementById('game-root');
+    this.root = root;
     this.el = {};
-    for (const id of ['hud', 'stars', 'health-fill', 'health-num', 'armour-fill', 'armour-num', 'cash', 'respect', 'objective', 'objective-text', 'objective-dist', 'speed', 'speed-unit', 'weapon', 'ammo', 'radio', 'prompt', 'banner', 'banner-title', 'banner-sub', 'toast', 'menu', 'menu-title', 'menu-body', 'pause', 'vignette', 'crosshair', 'minimap']) {
-      this.el[id] = document.getElementById(id);
-    }
-    this.map = this.el.minimap.getContext('2d');
-    this._toastTimer = 0;
-    this._bannerTimer = 0;
-    this.el.hud.style.display = 'none'; // the menu covers the screen first
-    this._bindMenuButtons();
+    const mk = (id, css) => {
+      const d = document.createElement('div');
+      d.id = id;
+      d.style.cssText = css;
+      root.appendChild(d);
+      this.el[id] = d;
+      return d;
+    };
+    // Top-left: money + respect.
+    mk('hud-money', 'position:absolute;left:14px;top:12px;color:#fff;font:700 20px system-ui;text-shadow:0 2px 4px #000;z-index:10;');
+    mk('hud-respect', 'position:absolute;left:14px;top:40px;color:#ffd24a;font:600 15px system-ui;text-shadow:0 2px 4px #000;z-index:10;');
+    // Top-right: wanted stars + health.
+    mk('hud-stars', 'position:absolute;right:16px;top:10px;color:#ffd24a;font:700 26px system-ui;letter-spacing:4px;text-shadow:0 2px 6px #000;z-index:10;');
+    mk('hud-health', 'position:absolute;right:16px;top:46px;width:180px;height:14px;background:rgba(0,0,0,.55);border:1px solid #fff3;border-radius:7px;z-index:10;');
+    this.el['hud-health'].innerHTML = '<div id="hud-health-fill" style="height:100%;width:100%;background:linear-gradient(90deg,#37c837,#8aff8a);border-radius:6px"></div>';
+    // Bottom-left: minimap.
+    const map = document.createElement('canvas');
+    map.id = 'minimap';
+    map.width = 200; map.height = 200;
+    map.style.cssText = 'position:absolute;left:14px;bottom:14px;width:200px;height:200px;border:2px solid rgba(255,255,255,.65);border-radius:50%;background:#0a2030;z-index:10;';
+    root.appendChild(map);
+    this.minimap = map;
+    this.mapCtx = map.getContext('2d');
+    // Bottom-centre: objective.
+    mk('hud-objective', 'position:absolute;left:50%;bottom:18px;transform:translateX(-50%);max-width:46vw;color:#fff;font:600 16px system-ui;text-align:center;text-shadow:0 2px 4px #000;background:rgba(0,0,0,.45);padding:8px 16px;border-radius:8px;z-index:10;');
+    // Bottom-right: speed + weapon + radio.
+    mk('hud-speed', 'position:absolute;right:16px;bottom:14px;color:#fff;font:700 26px system-ui;text-align:right;text-shadow:0 2px 4px #000;z-index:10;');
+    mk('hud-weapon', 'position:absolute;right:16px;bottom:52px;color:#fff;font:600 15px system-ui;text-align:right;text-shadow:0 2px 4px #000;z-index:10;');
+    mk('hud-radio', 'position:absolute;right:16px;bottom:76px;color:#9fd8ff;font:600 14px system-ui;text-align:right;text-shadow:0 2px 4px #000;z-index:10;');
+    // Centre: crosshair (only while armed on foot).
+    const ch = document.createElement('div');
+    ch.id = 'crosshair';
+    ch.style.cssText = 'position:absolute;left:50%;top:50%;width:22px;height:22px;transform:translate(-50%,-50%);z-index:10;pointer-events:none;display:none;';
+    ch.innerHTML = '<div style="position:absolute;left:10px;top:0;width:2px;height:22px;background:#fff"></div><div style="position:absolute;top:10px;left:0;width:22px;height:2px;background:#fff"></div>';
+    root.appendChild(ch);
+    this.el['crosshair'] = ch;
+    // Message feed (toasts).
+    mk('hud-messages', 'position:absolute;left:14px;top:76px;color:#fff;font:600 15px system-ui;text-shadow:0 2px 4px #000;z-index:10;max-width:420px;');
+    this.messages = [];
+    // Interaction prompt ("Press E ...").
+    mk('hud-prompt', 'position:absolute;left:50%;top:62%;transform:translateX(-50%);color:#ffd24a;font:700 17px system-ui;text-shadow:0 2px 4px #000;z-index:10;display:none;');
+    this._buildMenus();
   }
 
-  _bindMenuButtons() {
-    const bind = (id, fn) => { const b = document.getElementById(id); if (b) b.addEventListener('click', () => { this.game.audio.ensure(); this.game.audio.click(); fn(); }); };
-    bind('btn-new', () => this.game.newGame());
-    bind('btn-continue', () => this.game.continueGame());
-    bind('btn-settings', () => this.showSettings());
-    bind('btn-resume', () => this.game.resume());
-    bind('btn-save', () => { this.game.saveNow(); this.toast('Game saved'); });
-    bind('btn-quit', () => this.game.toMenu());
-    bind('btn-settings-back', () => this.showPause());
-    bind('btn-mute', () => { this.game.toggleMute(); });
+  _buildMenus() {
+    const root = this.root;
+    // Start screen.
+    const start = document.createElement('div');
+    start.id = 'menu-start';
+    start.style.cssText = 'position:absolute;inset:0;background:linear-gradient(180deg,rgba(10,20,40,.82),rgba(20,10,30,.88));display:flex;flex-direction:column;align-items:center;justify-content:center;color:#fff;z-index:40;font-family:system-ui,sans-serif;';
+    start.innerHTML = `
+      <div style="font:800 64px system-ui;letter-spacing:2px;text-shadow:0 4px 0 #c22,0 8px 24px #000">SOLMAR BAY</div>
+      <div style="font:600 18px system-ui;color:#ffd24a;margin:6px 0 22px">An open-world crime story · 10 missions · 5-star police · 3 radio stations</div>
+      <button id="btn-new" style="font:700 18px system-ui;padding:12px 34px;margin:6px;background:#f2c200;border:0;border-radius:8px;cursor:pointer">New Game</button>
+      <button id="btn-continue" style="font:700 18px system-ui;padding:12px 34px;margin:6px;background:#234;border:1px solid #789;color:#fff;border-radius:8px;cursor:pointer;display:none">Continue</button>
+      <div style="margin-top:18px;font:400 14px/1.7 system-ui;color:#cdd;text-align:center">WASD move · Mouse look · E enter car / interact · F hold to use · Click shoot<br>1-4 weapons · Q cycle · R reload · T street race / taxi · C radio · M mute · Esc pause</div>`;
+    root.appendChild(start);
+    this.el['menu-start'] = start;
+    // Pause screen.
+    const pause = document.createElement('div');
+    pause.id = 'menu-pause';
+    pause.style.cssText = 'position:absolute;inset:0;background:rgba(8,12,20,.78);display:none;flex-direction:column;align-items:center;justify-content:center;color:#fff;z-index:40;font-family:system-ui,sans-serif;';
+    pause.innerHTML = `
+      <div style="font:800 40px system-ui">Paused</div>
+      <button id="btn-resume" style="font:700 17px system-ui;padding:11px 30px;margin:8px;background:#f2c200;border:0;border-radius:8px;cursor:pointer">Resume</button>
+      <button id="btn-save-quit" style="font:700 17px system-ui;padding:11px 30px;margin:8px;background:#234;border:1px solid #789;color:#fff;border-radius:8px;cursor:pointer">Save &amp; Quit to Menu</button>
+      <div style="margin-top:14px;font:400 14px system-ui;color:#cdd">Volume <input id="set-volume" type="range" min="0" max="100" value="70" style="width:140px;vertical-align:middle"> <span id="set-volume-val">70</span>% · Quality <select id="set-quality"><option value="high">High</option><option value="low">Low</option></select></div>`;
+    root.appendChild(pause);
+    this.el['menu-pause'] = pause;
+    // Busted / wasted banner.
+    const banner = document.createElement('div');
+    banner.id = 'hud-banner';
+    banner.style.cssText = 'position:absolute;inset:0;display:none;align-items:center;justify-content:center;flex-direction:column;color:#fff;z-index:35;font-family:system-ui,sans-serif;background:rgba(0,0,0,.45);';
+    root.appendChild(banner);
+    this.el['hud-banner'] = banner;
   }
 
-  show(el, on) { if (el) el.style.display = on ? '' : 'none'; }
-  showStart(canContinue) {
-    this.show(this.el.menu, true);
-    this.show(this.el.pause, false);
-    this.show(this.el.hud, false);
-    document.getElementById('btn-continue').style.display = canContinue ? '' : 'none';
-    this.el['menu-title'].textContent = 'SOLMAR BAY';
-    this.el['menu-body'].innerHTML = `
-      <p class="tagline">Sun, salt, stolen cars. Build a crew. Own the Bay.</p>
-      <p class="controls">${BINDINGS.map(([k, v]) => `<span><b>${k}</b> ${v}</span>`).join('')}</p>
-      <p class="hint">Ten story missions. Street races. A garage, a gun shop, three safehouses.<br>Five stars of Bay PD. One Bay King.</p>`;
-  }
-  showPause() {
-    this.show(this.el.pause, true);
-    this.show(this.el.menu, false);
-    document.getElementById('pause-title').textContent = 'Paused';
-    document.getElementById('pause-body').innerHTML = `
-      <p>Cash $${this.game.cash.toLocaleString()} · ${respectRank(this.game.respect)} · ${this.game.respect} respect</p>
-      <p>${this.game.missions.objectiveText()}</p>`;
-  }
-  showSettings() {
-    this.show(this.el.menu, true);
-    this.show(this.el.pause, false);
-    this.el['menu-title'].textContent = 'Settings';
-    const s = this.game.settings;
-    this.el['menu-body'].innerHTML = `
-      <label>Master volume <input id="set-master" type="range" min="0" max="100" value="${Math.round(s.master * 100)}"></label>
-      <label>Music volume <input id="set-music" type="range" min="0" max="100" value="${Math.round(s.music * 100)}"></label>
-      <label>Effects volume <input id="set-sfx" type="range" min="0" max="100" value="${Math.round(s.sfx * 100)}"></label>
-      <label>Quality <select id="set-quality"><option ${s.quality === 'low' ? 'selected' : ''}>low</option><option ${s.quality === 'medium' ? 'selected' : ''}>medium</option><option ${s.quality === 'high' ? 'selected' : ''}>high</option></select></label>
-      <label>Mouse sensitivity <input id="set-sens" type="range" min="30" max="200" value="${Math.round(s.sens * 100)}"></label>
-      <p class="controls">${BINDINGS.map(([k, v]) => `<span><b>${k}</b> ${v}</span>`).join('')}</p>
-      <button id="btn-settings-done" class="btn">Done</button>`;
-    const done = document.getElementById('btn-settings-done');
-    if (done) done.addEventListener('click', () => { this.readSettings(); this.game.toMenu(); });
-  }
-  readSettings() {
-    const s = this.game.settings;
-    const v = (id) => document.getElementById(id)?.value;
-    if (v('set-master') != null) s.master = +v('set-master') / 100;
-    if (v('set-music') != null) s.music = +v('set-music') / 100;
-    if (v('set-sfx') != null) s.sfx = +v('set-sfx') / 100;
-    if (v('set-quality') != null) s.quality = v('set-quality');
-    if (v('set-sens') != null) s.sens = +v('set-sens') / 100;
-    this.game.applySettings();
+  showStart(hasSave) {
+    this.el['menu-start'].style.display = 'flex';
+    const cont = document.getElementById('btn-continue');
+    if (cont) cont.style.display = hasSave ? 'block' : 'none';
+    this.setHudVisible(false);
   }
 
-  banner(title, sub = '') {
-    this.el['banner-title'].textContent = title;
-    this.el['banner-sub'].textContent = sub;
-    this.el.banner.classList.add('show');
-    this._bannerTimer = 3.2;
-  }
-  toast(text) {
-    this.el.toast.textContent = text;
-    this.el.toast.classList.add('show');
-    this._toastTimer = 2.4;
-  }
-  prompt(text) {
-    if (text) { this.el.prompt.textContent = text; this.el.prompt.style.display = ''; }
-    else this.el.prompt.style.display = 'none';
+  hideStart() {
+    this.el['menu-start'].style.display = 'none';
+    this.setHudVisible(true);
   }
 
-  update(dt) {
-    const g = this.game;
-    if (this._bannerTimer > 0) { this._bannerTimer -= dt; if (this._bannerTimer <= 0) this.el.banner.classList.remove('show'); }
-    if (this._toastTimer > 0) { this._toastTimer -= dt; if (this._toastTimer <= 0) this.el.toast.classList.remove('show'); }
-    if (!g.playing) return;
-    // stars
-    let stars = '';
-    for (let i = 0; i < 5; i++) stars += i < g.police.stars ? '★' : '☆';
-    this.el.stars.textContent = stars;
-    this.el.stars.style.color = g.police.stars >= 3 ? '#ff4040' : '#ffd23e';
-    // health / armour
-    this.el['health-fill'].style.width = g.player.health + '%';
-    this.el['health-num'].textContent = Math.ceil(g.player.health);
-    this.el['armour-fill'].style.width = g.player.armour + '%';
-    this.el['armour-num'].textContent = Math.ceil(g.player.armour);
-    this.el.cash.textContent = '$' + g.cash.toLocaleString();
-    this.el.respect.textContent = `${respectRank(g.respect)} · ${g.respect}`;
-    // objective + distance
-    this.el['objective-text'].textContent = g.missions.objectiveText();
-    const mp = g.missions.markerPos;
-    if (mp) {
-      const px = g.playerCar ? g.playerCar.x : g.player.x;
-      const pz = g.playerCar ? g.playerCar.z : g.player.z;
-      this.el['objective-dist'].textContent = Math.round(Math.hypot(px - mp.x, pz - mp.z)) + ' m';
-    } else this.el['objective-dist'].textContent = '';
-    // speed / weapon / radio
-    if (g.playerCar) {
-      this.el.speed.textContent = Math.round(Math.abs(g.playerCar.speed) * 3.6);
-      this.el['speed-unit'].textContent = 'km/h';
-    } else {
-      this.el.speed.textContent = '—';
-      this.el['speed-unit'].textContent = '';
-    }
-    const w = WEAPONS[g.combat.weapon];
-    this.el.weapon.textContent = w.label;
-    this.el.ammo.textContent = `${g.combat.mag[g.combat.weapon]} / ${g.combat.ammo[g.combat.weapon]}`;
-    this.el.radio.textContent = `♪ ${g.audio.stationName}`;
-    // low-health vignette
-    this.el.vignette.style.opacity = g.player.health < 35 ? String(0.55 - g.player.health / 100) : '0';
-    this.el.crosshair.style.display = g.aiming ? '' : 'none';
-    this.drawMinimap();
+  showPause(show) {
+    this.el['menu-pause'].style.display = show ? 'flex' : 'none';
   }
 
-  drawMinimap() {
-    const g = this.game;
-    const ctx = this.map;
-    const S = 180, half = 300; // world half-extent shown
-    ctx.clearRect(0, 0, S, S);
-    ctx.fillStyle = 'rgba(12, 20, 28, 0.85)';
-    ctx.fillRect(0, 0, S, S);
-    const px = g.playerCar ? g.playerCar.x : g.player.x;
-    const pz = g.playerCar ? g.playerCar.z : g.player.z;
-    const toMap = (x, z) => [S / 2 + ((x - px) / half) * (S / 2), S / 2 + ((z - pz) / half) * (S / 2)];
-    // roads (grid)
-    ctx.strokeStyle = 'rgba(200, 200, 200, 0.35)';
-    ctx.lineWidth = 2;
-    const step = 52 / half * (S / 2);
-    for (let i = 0; i <= 9; i++) {
-      const off = (i * 52 - 234 - px) / half * (S / 2) + S / 2;
-      ctx.beginPath(); ctx.moveTo(off, 0); ctx.lineTo(off, S); ctx.stroke();
-      ctx.beginPath(); ctx.moveTo(0, off); ctx.lineTo(S, off); ctx.stroke();
+  showBanner(title, sub) {
+    const b = this.el['hud-banner'];
+    b.style.display = 'flex';
+    b.innerHTML = `<div style="font:800 52px system-ui;text-shadow:0 4px 16px #000">${title}</div><div style="font:600 18px system-ui;color:#ffd24a">${sub}</div>`;
+  }
+
+  hideBanner() {
+    this.el['hud-banner'].style.display = 'none';
+  }
+
+  setHudVisible(v) {
+    for (const id of ['hud-money', 'hud-respect', 'hud-stars', 'hud-health', 'hud-objective', 'hud-speed', 'hud-weapon', 'hud-radio', 'hud-messages', 'hud-prompt']) {
+      if (this.el[id]) this.el[id].style.display = v ? '' : 'none';
     }
-    // water (south)
-    const [, wy] = toMap(0, 260);
-    if (wy > 0 && wy < S) { ctx.fillStyle = 'rgba(40, 130, 170, 0.8)'; ctx.fillRect(0, wy, S, S - wy); }
-    // mission marker
-    if (g.missions.markerPos) {
-      const [mx, mz] = toMap(g.missions.markerPos.x, g.missions.markerPos.z);
-      ctx.fillStyle = '#ffd23e';
-      ctx.beginPath(); ctx.arc(mx, mz, 6, 0, Math.PI * 2); ctx.fill();
-      ctx.strokeStyle = '#ffd23e'; ctx.lineWidth = 2;
-      ctx.beginPath(); ctx.arc(mx, mz, 10 + Math.sin(performance.now() / 300) * 3, 0, Math.PI * 2); ctx.stroke();
+    if (this.minimap) this.minimap.style.display = v ? '' : 'none';
+  }
+
+  message(text) {
+    this.messages.push({ text, t: 6 });
+    if (this.messages.length > 3) this.messages.shift();
+  }
+
+  setPrompt(text) {
+    const p = this.el['hud-prompt'];
+    if (!text) { p.style.display = 'none'; return; }
+    p.style.display = 'block';
+    p.textContent = text;
+  }
+
+  rankName(respect) {
+    let name = RANKS[0].name;
+    for (const r of RANKS) if (respect >= r.at) name = r.name;
+    return name;
+  }
+
+  // Refresh every HUD readout and redraw the minimap.
+  update(dt, G) {
+    const p = G.player;
+    this.el['hud-money'].textContent = `$${G.cash.toLocaleString('en-US')}`;
+    this.el['hud-respect'].textContent = `Respect ${G.respect} · ${this.rankName(G.respect)} · Missions ${G.missions.completed}/10`;
+    this.el['hud-stars'].textContent = '★'.repeat(G.police.stars) + '☆'.repeat(5 - G.police.stars);
+    const fill = document.getElementById('hud-health-fill');
+    if (fill) {
+      fill.style.width = `${Math.max(0, p.health)}%`;
+      fill.style.background = p.health > 50 ? 'linear-gradient(90deg,#37c837,#8aff8a)' : p.health > 25 ? 'linear-gradient(90deg,#e8a020,#ffd24a)' : 'linear-gradient(90deg,#d42a2a,#ff6a6a)';
     }
-    // police (red dots)
-    ctx.fillStyle = '#ff4040';
-    for (const c of g.police.cars) {
-      const [x, y] = toMap(c.x, c.z);
-      ctx.fillRect(x - 2, y - 2, 4, 4);
+    const w = G.combat.current;
+    const mag = G.combat.mag[w];
+    const reserve = G.combat.ammo[w] === Infinity ? '∞' : G.combat.ammo[w];
+    this.el['hud-weapon'].textContent = `${w.toUpperCase()}  ${mag} / ${reserve}`;
+    const spd = p.inVehicle ? Math.abs(p.inVehicle.speed) * 3.6 : Math.abs(p.speed) * 3.6;
+    this.el['hud-speed'].textContent = p.inVehicle ? `${Math.round(spd)} km/h · ${p.inVehicle.def.name}` : `${Math.round(spd)} km/h · on foot`;
+    this.el['hud-radio'].textContent = G.audio.radioOn ? `♪ ${STATIONS[G.audio.station].name}` : '♪ radio off';
+    this.el['hud-objective'].textContent = G.missions.objectiveText;
+    this.el['crosshair'].style.display = (!p.inVehicle && G.state === 'playing') ? 'block' : 'none';
+    // Message toasts.
+    for (const m of this.messages) m.t -= dt;
+    this.messages = this.messages.filter((m) => m.t > 0);
+    this.el['hud-messages'].innerHTML = this.messages.map((m) => `<div style="opacity:${Math.min(1, m.t)}">${m.text}</div>`).join('');
+    this._drawMinimap(G);
+  }
+
+  _drawMinimap(G) {
+    const c = this.mapCtx;
+    const S = 200, W = 700; // world -350..350 maps to 0..200
+    const toX = (x) => ((x + 350) / W) * S;
+    const toY = (z) => ((z + 350) / W) * S;
+    c.clearRect(0, 0, S, S);
+    c.fillStyle = '#0a2030';
+    c.fillRect(0, 0, S, S);
+    // Water + beach.
+    c.fillStyle = '#2e7fb8';
+    c.fillRect(0, toY(235), S, S - toY(235));
+    c.fillStyle = '#e8d49a';
+    c.fillRect(0, toY(205), S, toY(235) - toY(205));
+    // Land.
+    c.fillStyle = '#3a6a3a';
+    c.fillRect(0, 0, S, toY(205));
+    // Roads.
+    c.strokeStyle = '#555';
+    c.lineWidth = 2;
+    for (const r of G.city.roadLines) {
+      c.beginPath();
+      c.moveTo(toX(r.x1), toY(r.z1));
+      c.lineTo(toX(r.x2), toY(r.z2));
+      c.stroke();
     }
-    if (g.police.heli) {
-      const [x, y] = toMap(g.police.heli.position.x, g.police.heli.position.z);
-      ctx.fillStyle = '#ff8040';
-      ctx.beginPath(); ctx.arc(x, y, 4, 0, Math.PI * 2); ctx.fill();
+    // Buildings.
+    c.fillStyle = '#8a8a7a';
+    for (const b of G.city.buildings) {
+      c.fillRect(toX(b.x - b.w / 2), toY(b.z - b.d / 2), Math.max(1, (b.w / W) * S), Math.max(1, (b.d / W) * S));
     }
-    // traffic (grey dots)
-    ctx.fillStyle = 'rgba(220, 220, 220, 0.7)';
-    for (const c of g.traffic.cars) {
-      const [x, y] = toMap(c.x, c.z);
-      if (x > 0 && x < S && y > 0 && y < S) ctx.fillRect(x - 1.5, y - 1.5, 3, 3);
+    // Bay coins.
+    c.fillStyle = '#ffd24a';
+    for (const coin of G.city.coins) {
+      if (coin.taken) continue;
+      c.beginPath(); c.arc(toX(coin.x), toY(coin.z), 1.6, 0, Math.PI * 2); c.fill();
     }
-    // player arrow (centre, pointing up = heading)
-    const heading = g.playerCar ? g.playerCar.heading : g.player.heading;
-    ctx.save();
-    ctx.translate(S / 2, S / 2);
-    ctx.rotate(heading);
-    ctx.fillStyle = '#ffffff';
-    ctx.beginPath(); ctx.moveTo(0, -8); ctx.lineTo(5, 6); ctx.lineTo(-5, 6); ctx.closePath(); ctx.fill();
-    ctx.restore();
-    // north tick
-    ctx.fillStyle = 'rgba(255,255,255,0.8)';
-    ctx.font = 'bold 11px sans-serif';
-    ctx.fillText('N', S / 2 - 4, 12);
+    // Objective marker (pulsing yellow).
+    if (G.missions.markerPos) {
+      const pulse = 3 + Math.sin(performance.now() / 200) * 1.2;
+      c.fillStyle = '#ffd24a';
+      c.beginPath(); c.arc(toX(G.missions.markerPos.x), toY(G.missions.markerPos.z), pulse, 0, Math.PI * 2); c.fill();
+      c.strokeStyle = '#fff'; c.lineWidth = 1;
+      c.beginPath(); c.arc(toX(G.missions.markerPos.x), toY(G.missions.markerPos.z), pulse + 2.5, 0, Math.PI * 2); c.stroke();
+    }
+    // Police (blue), enemies (red), traffic (grey).
+    const dot = (x, z, colour, r) => {
+      c.fillStyle = colour;
+      c.beginPath(); c.arc(toX(x), toY(z), r, 0, Math.PI * 2); c.fill();
+    };
+    for (const cop of G.police.cops) if (!cop.dead) dot(cop.x, cop.z, '#3a8aff', 2.4);
+    for (const e of G.combat.enemies) if (!e.dead) dot(e.x, e.z, '#ff4040', 2.2);
+    for (const v of G.traffic.cars) if (!v.dead) dot(v.x, v.z, '#bbbbbb', 1.4);
+    // Player arrow (white, points along heading).
+    const px = toX(G.player.x), py = toY(G.player.z);
+    const h = G.player.inVehicle ? G.player.inVehicle.heading : G.player.heading;
+    c.fillStyle = '#ffffff';
+    c.beginPath();
+    c.moveTo(px + Math.sin(h) * 6, py + Math.cos(h) * 6);
+    c.lineTo(px + Math.sin(h + 2.5) * 4.5, py + Math.cos(h + 2.5) * 4.5);
+    c.lineTo(px + Math.sin(h - 2.5) * 4.5, py + Math.cos(h - 2.5) * 4.5);
+    c.closePath(); c.fill();
+    c.strokeStyle = '#000'; c.lineWidth = 1; c.stroke();
+    // North tick.
+    c.fillStyle = '#fff';
+    c.font = 'bold 10px system-ui';
+    c.fillText('N', S - 12, 12);
   }
 }

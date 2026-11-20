@@ -1,68 +1,80 @@
-// Solmar Bay — screenshot scenes.
-// One job: given ?shot=start|drive|chase|mission (from shots.json), put the
-// game in a photogenic, system-rich state and hold it there, so each of the
-// four screenshots shows several systems at once: HUD, minimap, traffic,
-// wanted level, police, a mission objective. The game runs normally underneath;
-// this only chooses the starting state and camera.
+// shots.js — poses the game for the four screenshots the entry ships.
+// Each pose sets the player, camera and world state, then the caller
+// waits a few frames and captures. Used by the test driver; the poses
+// are ordinary game state, nothing is faked for the camera.
+import { Vehicle, spawnBoat } from './vehicles.js';
 
-import { Vehicle } from './vehicles.js';
+export const SHOT_NAMES = ['1-chase.jpg', '2-mission.jpg', '3-drive.jpg', '4-start.jpg'];
 
-export const SHOT_NAMES = ['start', 'drive', 'chase', 'mission'];
-
-export function applyShot(game, shot) {
-  const g = game;
-  if (!SHOT_NAMES.includes(shot)) return;
-  // start from a clean slate: no wanted, no active mission stage confusion
-  g.police.clear();
-  g.combat.clearGroup();
-  if (shot === 'start') {
-    // On foot on a main street: traffic, peds, buildings, HUD + minimap.
-    g.player.reset(-19, -70);
-    g.player.heading = Math.PI;
-    g.cameraRig.snap(g.player.heading);
-    g.missions.startStory();
-  } else if (shot === 'drive') {
-    // Driving a sports car down the coast road with traffic around.
-    const car = g.spawnCar('sports', -20, 120, 0, { driver: 'player' });
-    g.player.enterVehicle(car);
-    g.playerCar = car;
-    // hold W so the car is actually driving (not parked) when the shot lands
-    g.input.keys.add('KeyW');
-    g.cameraRig.snap(0);
-    g.missions.startStory();
-    g.missions.stage = 0;
-  } else if (shot === 'chase') {
-    // A 3-star chase: police cars, helicopter, roadblock, objective on the HUD.
-    const car = g.spawnCar('sports', 0, 40, Math.PI, { driver: 'player' });
-    g.player.enterVehicle(car);
-    g.playerCar = car;
-    car.speed = 30;
-    g.police.setStars(3);
-    g.police.spawnRoadblock(0, 40, Math.PI);
-    // two pursuit cars close behind
-    for (let i = 0; i < 2; i++) {
-      const p = g.police.spawnCar(0, 40);
-      p.x = -6 + i * 12; p.z = 40 - 22 - i * 6;
-      p.heading = Math.PI;
-    }
-    g.missions.startStory();
-    g.cameraRig.snap(Math.PI);
-  } else if (shot === 'mission') {
-    // Mission 4 shootout at the docks: enemies, cover, objective, HUD.
-    // Stand close to the Vultures and face them, so they are in frame.
-    g.player.reset(118, 118);
-    g.player.heading = Math.PI / 4;
-    g.combat.giveWeapon('rifle', 60);
-    g.combat.select('rifle');
-    g.combat.giveWeapon('smg', 64);
-    g.missions.index = 3;
-    g.missions.startStory();
-    // jump to the kill stage so enemies are present
-    g.missions.stage = 1;
-    g.missions._enterStage();
-    g.cameraRig.snap(g.player.heading);
+// Put the player in a sports car on the coast road, 3 stars, police
+// behind — the chase shot.
+export function poseChase(G) {
+  const car = new Vehicle(G.scene, 'sports', 0, 210, Math.PI / 2, { driver: null, owned: true });
+  G.vehicles.push(car);
+  G.player.teleport(0, 210, Math.PI / 2);
+  G.player.enterVehicle(car);
+  car.speed = 24;
+  G.police.setStars(3);
+  G.police.cops = [];
+  for (let i = 0; i < 3; i++) {
+    const cop = new Vehicle(G.scene, 'police', -30 - i * 12, 210 + (i % 2) * 6, Math.PI / 2, { driver: 'police' });
+    cop.speed = 22;
+    G.police.cops.push(cop);
+    G.vehicles.push(cop);
   }
-  // let the audio context exist (it starts on the first gesture; in headless
-  // shots it may stay suspended — the game still renders identically).
-  g.audio.ensure();
+  G.cameraRig.setYaw(Math.PI / 2, 0.3);
+  G.cameraRig.snap(G.player.x, G.player.z, 1.5);
+  G.hud.message('Police chase — 3 stars');
+}
+
+// Mission in progress: m4 Dockside, Vultures in view, player aiming.
+export function poseMission(G) {
+  G.missions.nextIndex = 3; // m4 is next
+  G.missions.startMission(G.missionCtx);
+  // Teleport to the docks and let the kill stage begin.
+  G.player.teleport(210, 70, Math.PI / 2);
+  G.cameraRig.setYaw(Math.PI / 2, 0.3);
+  const alive = G.combat.aliveEnemies();
+  if (alive.length) {
+    const e = alive[0];
+    const h = Math.atan2(e.x - G.player.x, e.z - G.player.z);
+    G.player.aimHeading = h;
+    G.player.firing = true;
+    G.cameraRig.setYaw(h, 0.28);
+  }
+  G.cameraRig.snap(G.player.x, G.player.z, 1.5);
+}
+
+// Driving: sports car on the coast road at speed, camera behind.
+export function poseDrive(G) {
+  const car = new Vehicle(G.scene, 'sports', -120, 210, Math.PI / 2, { driver: null, owned: true });
+  G.vehicles.push(car);
+  G.player.teleport(-120, 210, Math.PI / 2);
+  G.player.enterVehicle(car);
+  car.speed = 30;
+  G.cameraRig.setYaw(Math.PI / 2, 0.32);
+  G.cameraRig.snap(G.player.x, G.player.z, 1.5);
+}
+
+// On foot at the start, HUD and minimap visible. Mara's Place sits at
+// (-245,-245) — a house, so the player stands on the avenue beside it
+// (x=-210 is the road) facing west at the house and the city; standing
+// ON the house puts the camera inside its walls and the shot is blank.
+export function poseStart(G) {
+  if (G.player.inVehicle) G.player.exitVehicle();
+  G.player.teleport(-210, -245, -Math.PI / 2);
+  G.player.health = 100;
+  G.police.clear();
+  G.cameraRig.setYaw(-Math.PI / 2, 0.3);
+  G.cameraRig.snap(G.player.x, G.player.z, 1.5);
+}
+
+// Human-readable descriptions of the four shipped screenshots.
+export function describeShots() {
+  return [
+    { file: '1-chase.jpg', what: 'Police chase at 3 stars — Interceptors behind the Comet GT on the coast road, HUD + minimap live' },
+    { file: '2-mission.jpg', what: 'Mission m4 Dockside in progress — Vultures in view, objective marker, player aiming' },
+    { file: '3-drive.jpg', what: 'Driving the Comet GT along the coast road at speed' },
+    { file: '4-start.jpg', what: "On foot at Mara's Place at the start — HUD, minimap and the city ahead" },
+  ];
 }

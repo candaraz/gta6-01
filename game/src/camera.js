@@ -1,76 +1,93 @@
-// Solmar Bay — the third-person camera.
-// One job: follow the player (on foot or in a car) from behind, orbit on drag,
-// zoom on wheel, and never clip through a building.
-
+// camera.js — third-person follow camera that stays CLOSE (no bird's-eye),
+// looks AHEAD of the player so the crosshair leads the character, and
+// eases behind the car while driving. W moves away from the camera.
 import * as THREE from 'three';
-import { clamp, damp } from './random.js';
+import { clamp, angleDiff } from './random.js';
 
 export class CameraRig {
-  constructor(camera) {
+  constructor(camera, scene) {
     this.camera = camera;
-    this.yaw = 0; // orbit around the player
-    this.pitch = 0.25;
-    this.dist = 10;
-    this.mode = 0; // 0 near, 1 far, 2 top (C cycles)
-    this._placed = false;
-    this._pos = new THREE.Vector3();
-    this._look = new THREE.Vector3();
+    this.scene = scene;
+    this.yaw = Math.PI;      // camera looks north... see below
+    this.pitch = 0.32;
+    this.dist = 8;
+    this.height = 3.2;
+    this.target = new THREE.Vector3(-245, 1.5, -245);
+    this._desired = new THREE.Vector3();
+    this._snapped = false;
+    this.mouseIdle = 0;
   }
 
-  cycleMode() { this.mode = (this.mode + 1) % 3; }
+  // Camera forward on the ground: the direction W takes the player.
+  forward() {
+    return { x: Math.sin(this.yaw), z: Math.cos(this.yaw) };
+  }
 
-  update(dt, target, heading, inCar, speed, input, city) {
-    // drag orbits; when driving, the camera eases back behind the car
-    this.yaw -= input.mouseDX * 0.005;
-    this.pitch = clamp(this.pitch + input.mouseDY * 0.004, 0.05, 1.1);
-    if (input.wheel !== 0) this.dist = clamp(this.dist + input.wheel * 0.01, 5, 16);
-    const baseDist = this.mode === 0 ? 10 : this.mode === 1 ? 14 : 20;
-    const wantDist = inCar ? baseDist + clamp(Math.abs(speed) * 0.08, 0, 4) : baseDist;
-    this.dist = damp(this.dist, wantDist, 3, dt);
-    if (inCar) {
-      // ease the orbit back behind the car's heading
-      const diff = ((heading - this.yaw + Math.PI * 3) % (Math.PI * 2)) - Math.PI;
-      this.yaw += diff * Math.min(1, 1.6 * dt);
+  // Point the camera at a heading (used by screenshots and teleports).
+  setYaw(yaw, pitch) {
+    this.yaw = yaw;
+    if (pitch !== undefined) this.pitch = clamp(pitch, 0.05, 0.85);
+    this._snapped = false;
+  }
+
+  // The direction the crosshair points on the ground.
+  aimHeading() {
+    return this.yaw;
+  }
+
+  // Instantly place the camera (after a teleport, or for a screenshot).
+  snap(px, pz, py) {
+    const f = this.forward();
+    this.camera.position.set(px - f.x * this.dist, (py || 1.5) + this.height, pz - f.z * this.dist);
+    this._lookAt(px, pz, py);
+    this._snapped = true;
+  }
+
+  _lookAt(px, pz, py) {
+    // Look AHEAD of the player at a far point, so the crosshair sits in
+    // front of the character and the centre ray stays near level: a ray
+    // aimed at a point 5 m ahead dives into the ground before it reaches
+    // an enemy 25 m out. 30 m ahead keeps shots on target.
+    const f = this.forward();
+    this.target.set(px + f.x * 30, (py || 1.5) - 0.1, pz + f.z * 30);
+    this.camera.lookAt(this.target);
+  }
+
+  update(dt, px, pz, py, heading, speed, inVehicle, mouseDX, mouseDY, shake) {
+    this.mouseIdle += dt;
+    if (mouseDX || mouseDY) {
+      this.yaw -= mouseDX * 0.0032;
+      this.pitch = clamp(this.pitch + mouseDY * 0.0022, 0.05, 0.85);
+      this.mouseIdle = 0;
     }
-    const px = target.x - Math.sin(this.yaw) * Math.cos(this.pitch) * this.dist;
-    const pz = target.z - Math.cos(this.yaw) * Math.cos(this.pitch) * this.dist;
-    const py = (target.y ?? 0) + 2.2 + Math.sin(this.pitch) * this.dist;
-    this._pos.set(px, py, pz);
-    // Look at a point ahead of the player in the camera's view direction, so
-    // the player sits below centre and the crosshair points at what is ahead
-    // (not at the player's back) — that is what makes shooting work.
-    this._look.set(target.x + Math.sin(this.yaw) * 6, (target.y ?? 0) + 1.4, target.z + Math.cos(this.yaw) * 6);
-    // keep the camera out of buildings: walk from the player toward the
-    // desired spot and stop at the last point that is not inside a collider,
-    // so the camera pulls in close instead of climbing to a bird's-eye view.
-    if (city) {
-      for (let t = 1; t >= 0.3; t -= 0.1) {
-        const cx = target.x + (px - target.x) * t;
-        const cz = target.z + (pz - target.z) * t;
-        if (!this._insideCollider(cx, cz, city)) {
-          this._pos.set(cx, py, cz);
-          break;
-        }
-        if (t <= 0.31) this._pos.set(target.x + (px - target.x) * 0.3, py, target.z + (pz - target.z) * 0.3);
-      }
+    // While driving fast with no mouse input, ease the camera behind the car.
+    if (inVehicle && speed > 6 && this.mouseIdle > 1.2) {
+      const d = angleDiff(this.yaw, heading);
+      this.yaw += d * Math.min(1, dt * 0.7);
     }
-    if (!this._placed) {
-      // first frame after a snap: put the camera exactly there, no easing
-      this.camera.position.copy(this._pos);
-      this._placed = true;
+    const dist = inVehicle ? 10.5 : 8;
+    const height = inVehicle ? 3.8 : 1.0;
+    const f = this.forward();
+    const lift = Math.sin(this.pitch) * dist;
+    this._desired.set(
+      px - f.x * (dist - lift * 0.3),
+      (py || 1.5) + height + lift * 0.45,
+      pz - f.z * (dist - lift * 0.3)
+    );
+    const cur = this.camera.position;
+    const gap = cur.distanceTo(this._desired);
+    if (!this._snapped || gap > 30) {
+      cur.copy(this._desired);
+      this._snapped = true;
     } else {
-      this.camera.position.lerp(this._pos, 1 - Math.exp(-10 * dt));
+      const k = Math.min(1, dt * 7);
+      cur.lerp(this._desired, k);
     }
-    this.camera.lookAt(this._look);
-  }
-
-  _insideCollider(x, z, city) {
-    for (const c of city.colliders) {
-      if (Math.abs(x - c.x) < c.hx + 0.5 && Math.abs(z - c.z) < c.hz + 0.5) return true;
+    // Screen shake on top of the smoothed position.
+    if (shake) {
+      cur.x += shake.x;
+      cur.y += shake.y;
     }
-    return false;
+    this._lookAt(px, pz, py);
   }
-
-  // Snap the camera behind a heading instantly (used on mission starts / shots).
-  snap(heading) { this.yaw = heading; this._placed = false; }
 }
