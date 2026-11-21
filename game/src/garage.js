@@ -1,196 +1,161 @@
-// garage.js — Solmar Bay v3: the side economy.
-// One job: everything that pays outside the story — garage engine upgrades,
-// the gun shop, safehouses, street races (T in a car), taxi fares (T on
-// foot), and the 20 hidden Bay Coins.
-
+// Side activities: garage upgrades, gun shop, safehouse saving,
+// twenty hidden Bay Coins, three street-race circuits (T in a car)
+// and taxi fares (T on foot). All pay out and never touch the story.
 import * as THREE from 'three';
-import { TUNE, AVENUES } from './config.js';
-import { makeRng, pick } from './random.js';
+import { GARAGE, GUNSHOP, SAFEHOUSES, COIN_SPOTS, RACES, TAXI_SPOTS, WEAPONS } from './config.js';
+import { dist } from './random.js';
 
-const COIN_SPOTS = [
-  [0, 232], [-72, -64], [48, -16], [-24, 40], [24, 32], [96, 88], [280, 152],
-  [260, -32], [250, 12], [296, 8], [0, 288], [144, 288], [288, 144], [-168, 168],
-  [168, -168], [-264, 72], [72, 216], [-96, -96], [96, -96], [-96, 96],
-];
+export function createActivities(G) {
+  const A = {
+    coins: 0, coinsFound: {},
+    race: null, taxi: null,
+    engineLevel: 0,
+  };
+  G.activities = A;
+  G.safehouses = SAFEHOUSES;
 
-const RACE_CIRCUITS = [
-  { name: 'Downtown Loop', pts: [[0, -48], [96, -48], [96, 48], [0, 48], [-48, 48], [-48, -48]], par: 75 },
-  { name: 'Coast Run', pts: [[288, -96], [288, 96], [288, 240], [144, 288], [0, 288], [-48, 240]], par: 95 },
-  { name: 'Yards Sprint', pts: [[-96, -240], [96, -240], [192, -240], [192, -144], [96, -144], [-96, -144]], par: 80 },
-];
+  // Bay Coins: spinning gold coins on the streets.
+  const coinGeo = new THREE.CylinderGeometry(0.7, 0.7, 0.15, 12);
+  const coinMat = new THREE.MeshBasicMaterial({ color: 0xffd23e });
+  A.coinMeshes = [];
+  COIN_SPOTS.forEach(([x, z], i) => {
+    const m = new THREE.Mesh(coinGeo, coinMat);
+    m.position.set(x, 1.2, z);
+    m.rotation.x = Math.PI / 2;
+    G.scene.add(m);
+    A.coinMeshes.push({ mesh: m, x, z, i, taken: false });
+  });
 
-export function createGarage(G) {
-  const scene = G.scene;
-  const dummy = new THREE.Object3D();
-  // Bay Coins: spinning gold discs.
-  const coinGeo = new THREE.CylinderGeometry(0.7, 0.7, 0.14, 14);
-  coinGeo.rotateX(Math.PI / 2);
-  const coinMat = new THREE.MeshBasicMaterial({ color: 0xffc21f });
-  const coinMesh = new THREE.InstancedMesh(coinGeo, coinMat, COIN_SPOTS.length);
-  coinMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-  coinMesh.frustumCulled = false;
-  scene.add(coinMesh);
-  const hide = new THREE.Matrix4().makeScale(0, 0, 0);
-  const coins = COIN_SPOTS.map(([x, z], i) => ({ x, z, taken: false, slot: i, bob: i * 1.3 }));
-  // Race gate markers reuse the mission marker style: small gold diamonds.
-  const gateGeo = new THREE.OctahedronGeometry(1.2);
-  const gateMat = new THREE.MeshBasicMaterial({ color: 0xffc21f });
-  const gateMesh = new THREE.InstancedMesh(gateGeo, gateMat, 8);
-  gateMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-  gateMesh.frustumCulled = false;
-  scene.add(gateMesh);
-  for (let i = 0; i < 8; i++) gateMesh.setMatrixAt(i, hide);
-
-  const rng = makeRng(2026);
-  let race = null;      // {circuit, idx, t}
-  let fare = null;      // {stage, px, pz, dx, dz}
-  let shopMsg = '';
-
-  function near(x, z, r) {
-    const p = G.player.p;
-    return Math.hypot(p.x - x, p.z - z) < r;
+  // Garage + gun shop markers (floating signs).
+  function marker(x, z, color, label) {
+    const m = new THREE.Mesh(new THREE.BoxGeometry(6, 1, 0.2),
+      new THREE.MeshBasicMaterial({ color }));
+    m.position.set(x, 6, z);
+    G.scene.add(m);
+    return m;
   }
+  marker(GARAGE.x, GARAGE.z, 0x37b6ff, 'garage');
+  marker(GUNSHOP.x, GUNSHOP.z, 0xff5a7a, 'gunshop');
 
-  function startRace() {
-    const circuit = pick(rng, RACE_CIRCUITS);
-    race = { circuit, idx: 0, t: 0 };
-    G.hud.announce(`${circuit.name} — beat ${circuit.par}s for $${TUNE.raceReward.toLocaleString()}`, 3000);
-    G.hud.dialogue('Ivy', `${circuit.name}. ${circuit.par} seconds. Do not embarrass me.`);
-  }
-  function startFare() {
-    // A passenger waits at a nearby sidewalk; drive them across town.
-    const p = G.player.p;
-    const a = pick(rng, AVENUES);
-    const px = a + 7, pz = p.z + (rng() < 0.5 ? -60 : 60);
-    const dx = pick(rng, AVENUES) + 7, dz = pick(rng, [-240, -144, -48, 48, 144, 240]);
-    fare = { stage: 'pickup', px, pz, dx, dz };
-    G.hud.announce('Taxi fare: pick up the passenger', 2600);
-  }
-
-  function update(dt, input) {
-    const p = G.player.p;
-    // --- Bay Coins ---------------------------------------------------------
-    for (const c of coins) {
+  A.step = function (dt) {
+    const P = G.player;
+    // Coins spin and get collected.
+    for (const c of A.coinMeshes) {
       if (c.taken) continue;
-      dummy.position.set(c.x, 1.1 + Math.sin(G.time * 2 + c.bob) * 0.25, c.z);
-      dummy.rotation.set(0, G.time * 1.5 + c.bob, 0);
-      dummy.scale.set(1, 1, 1);
-      dummy.updateMatrix();
-      coinMesh.setMatrixAt(c.slot, dummy.matrix);
-      if (Math.hypot(p.x - c.x, p.z - c.z) < 2.2) {
+      c.mesh.rotation.z += dt * 3;
+      c.mesh.position.y = 1.2 + Math.sin(G.time * 3 + c.i) * 0.2;
+      if (dist(P.x, P.z, c.x, c.z) < 2.5) {
         c.taken = true;
-        coinMesh.setMatrixAt(c.slot, hide);
-        G.player.addCash(TUNE.coinValue);
-        G.player.p.coins++;
-        G.audio.cash();
-        G.hud.announce(`Bay Coin +$${TUNE.coinValue} (${G.player.p.coins}/20)`, 1600);
-      }
-    }
-    coinMesh.instanceMatrix.needsUpdate = true;
-
-    // --- Street race (T in a car) / taxi fare (T on foot) ------------------
-    if (input.takePressed('KeyT')) {
-      if (!p.onFoot && !race) startRace();
-      else if (p.onFoot && !fare) startFare();
-    }
-    if (race) {
-      race.t += dt;
-      const pt = race.circuit.pts[race.idx];
-      const d = Math.hypot(p.x - pt[0], p.z - pt[1]);
-      G.hud.setObjective(`${race.circuit.name} — gate ${race.idx + 1}/${race.circuit.pts.length} (${Math.ceil(race.circuit.par - race.t)}s)`, d, { x: pt[0], z: pt[1], r: 9 });
-      dummy.position.set(pt[0], 5, pt[1]);
-      dummy.rotation.set(0, G.time * 2, 0);
-      dummy.scale.set(1, 1, 1);
-      dummy.updateMatrix();
-      gateMesh.setMatrixAt(0, dummy.matrix);
-      gateMesh.instanceMatrix.needsUpdate = true;
-      if (d < 9) {
+        c.mesh.visible = false;
+        A.coins++;
+        G.cash += 250;
         G.audio.pickup();
-        race.idx++;
-        if (race.idx >= race.circuit.pts.length) {
-          const won = race.t <= race.circuit.par;
-          if (won) {
-            G.player.addCash(TUNE.raceReward);
-            G.player.addRespect(TUNE.raceRespect);
-            G.hud.announce(`${race.circuit.name} won in ${race.t.toFixed(1)}s — $${TUNE.raceReward.toLocaleString()}`, 3200);
-          } else G.hud.announce(`${race.circuit.name}: ${race.t.toFixed(1)}s — par was ${race.circuit.par}s`, 2800);
-          race = null;
-          gateMesh.setMatrixAt(0, hide);
-          gateMesh.instanceMatrix.needsUpdate = true;
-        }
-      } else if (race.t > race.circuit.par + 30) {
-        G.hud.announce('Race abandoned', 2000);
-        race = null;
-        gateMesh.setMatrixAt(0, hide);
-        gateMesh.instanceMatrix.needsUpdate = true;
+        G.hud.toast(`Bay Coin ${A.coins}/20  +$250`);
       }
     }
-    if (fare) {
-      if (fare.stage === 'pickup') {
-        const d = Math.hypot(p.x - fare.px, p.z - fare.pz);
-        G.hud.setObjective('Taxi: pick up the passenger', d, { x: fare.px, z: fare.pz, r: 8 });
-        if (d < 8 && !p.onFoot) {
-          fare.stage = 'drop';
-          G.hud.announce('Passenger aboard — drive them over', 2200);
-        }
-      } else {
-        const d = Math.hypot(p.x - fare.dx, p.z - fare.dz);
-        G.hud.setObjective('Taxi: drop off the passenger', d, { x: fare.dx, z: fare.dz, r: 8 });
-        if (d < 8) {
-          G.player.addCash(TUNE.taxiReward);
-          G.player.addRespect(TUNE.taxiRespect);
-          G.hud.announce(`Fare complete +$${TUNE.taxiReward}`, 2600);
-          fare = null;
-        }
+    // Garage: hold F at it to tune the current car: $1000 a level, +8% top speed.
+    if (dist(P.x, P.z, GARAGE.x, GARAGE.z) < 10 && P.vehicle && G.input.isDown('punch')) {
+      // Hold F at the garage to tune: $1000 a level, +8% top speed.
+      if (G.cash >= 1000 && A.engineLevel < 3) {
+        G.cash -= 1000;
+        A.engineLevel++;
+        P.vehicle.def = Object.assign({}, P.vehicle.def, { top: P.vehicle.def.top * 1.08 });
+        G.audio.cash();
+        G.hud.toast(`Engine tuned to level ${A.engineLevel}`);
       }
     }
-
-    // --- Shops and safehouses (E on foot, no car in reach) ------------------
-    if (p.onFoot && !G.vehicles.nearestCar(p.x, p.z, 4.6)) {
-      // Garage: engine upgrades. The prompt sits on the street west of
-      // the garage (the building's wall is 10 m out; the prompt must be
-      // reachable on foot).
-      if (near(48, -48, 9)) {
-        const lvl = p.garageLevel;
-        if (lvl < 3) {
-          const cost = TUNE.garageCost[lvl + 1] || 0;
-          G.hud.prompt(`E — Engine upgrade tier ${lvl + 1} ($${cost.toLocaleString()})`);
-          if (input.takePressed('KeyE') && p.cash >= cost) {
-            p.cash -= cost; p.garageLevel++;
-            if (p.car) p.car.upgraded = 1 + p.garageLevel * 0.09;
-            G.audio.cash();
-            G.hud.announce(`Engine tier ${p.garageLevel} installed`, 2200);
-          }
-        } else G.hud.prompt("Tessa's Garage — engine maxed");
-      }
-      // Gun shop: buy the next weapon. Prompt on the street west of it.
-      else if (near(-48, 48, 9)) {
-        const order = ['smg', 'shotgun', 'rifle'];
-        const next = order.find((w) => !p.weapons[w] || !p.weapons[w].owned);
-        if (next) {
-          const cost = TUNE.gunCost[next];
-          G.hud.prompt(`E — Buy ${next.toUpperCase()} ($${cost.toLocaleString()})`);
-          if (input.takePressed('KeyE') && p.cash >= cost) {
-            p.cash -= cost;
-            G.player.giveWeapon(next);
-            G.audio.cash();
-            G.hud.announce(`${next.toUpperCase()} bought`, 2200);
-          }
-        } else G.hud.prompt('Gun shop — fully stocked');
-      }
-      // Safehouses: save + heal. The loft's prompt is on the street west
-      // of it (its wall is 12 m out).
-      else if (near(-72, -72, 8) || near(280, 160, 8) || near(72, 96, 8)) {
-        G.hud.prompt('E — Save at the safehouse');
-        if (input.takePressed('KeyE')) {
-          G.player.heal(100);
-          G.save.write();
+    // Gun shop: E near it buys the next weapon.
+    if (dist(P.x, P.z, GUNSHOP.x, GUNSHOP.z) < 8 && G.input.consume('enter') && !P.vehicle) {
+      const order = ['smg', 'shotgun', 'rifle'];
+      const next = order.find((k) => !G.combat.owned[k]);
+      if (next) {
+        const price = next === 'smg' ? 1500 : next === 'shotgun' ? 2500 : 4000;
+        if (G.cash >= price) {
+          G.cash -= price;
+          G.combat.give(next);
           G.audio.cash();
-          G.hud.announce('Game saved', 1800);
-        }
-      } else shopMsg = '';
+          G.hud.toast(`Bought the ${WEAPONS[next].name} — $${price}`);
+        } else G.hud.toast(`Need $${price} for the ${WEAPONS[next].name}`);
+      } else G.hud.toast('Ammo restocked');
+      if (!next) {
+        G.combat.reserve[G.combat.current] = (G.combat.reserve[G.combat.current] || 0) + 60;
+      }
     }
-  }
-
-  return { update, get race() { return race; }, get fare() { return fare; }, coins };
+    // Safehouse: standing at one saves the game.
+    for (const s of SAFEHOUSES) {
+      if (dist(P.x, P.z, s.x, s.z) < 10 && G.input.consume('enter') && !P.vehicle) {
+        G.save.saveGame();
+        G.hud.toast('Saved at ' + s.name);
+      }
+    }
+    // Street race (T in a car) / taxi fare (T on foot). Not during a
+    // mission race stage — the objective beam is already in use there.
+    const mst = G.missions.currentStage();
+    const inMissionRace = mst && (mst.kind === 'race' || mst.kind === 'boat');
+    if (G.input.consume('activity') && !inMissionRace) {
+      if (P.vehicle && !A.race && !A.taxi) {
+        const R = RACES[Math.floor(Math.random() * RACES.length)];
+        A.race = { def: R, next: 0, t: 0 };
+        G.missions.setObjective(R.points[0].x, R.points[0].z, `Race: ${R.name}`);
+        G.hud.toast(`Street race: ${R.name} — ${R.limit}s, $${R.prize}`);
+      } else if (!P.vehicle && !A.race && !A.taxi) {
+        const from = TAXI_SPOTS[Math.floor(Math.random() * TAXI_SPOTS.length)];
+        const to = TAXI_SPOTS[Math.floor(Math.random() * TAXI_SPOTS.length)];
+        A.taxi = { from, to, t: 0, state: 'pickup' };
+        G.missions.setObjective(from.x, from.z, 'Taxi: pick up the fare');
+        G.hud.toast('Taxi fare — pick up the passenger');
+      }
+    }
+    if (A.race) {
+      const R = A.race;
+      R.t += dt;
+      const pt = R.def.points[R.next];
+      if (dist(P.x, P.z, pt.x, pt.z) < 10) {
+        R.next++;
+        G.audio.pickup();
+        if (R.next >= R.def.points.length) {
+          G.cash += R.def.prize;
+          G.respect += 40;
+          G.audio.cash();
+          G.hud.toast(`Race won! +$${R.def.prize}`);
+          A.race = null;
+          G.missions.clearObjective();
+          if (G.missions.mission()) G.missions.restoreObjective();
+        } else G.missions.setObjective(R.def.points[R.next].x, R.def.points[R.next].z, `Race: ${R.def.name}`);
+      }
+      if (R.t > R.def.limit) {
+        G.hud.toast('Race lost — out of time');
+        A.race = null;
+        G.missions.clearObjective();
+        if (G.missions.mission()) G.missions.restoreObjective();
+      }
+    }
+    if (A.taxi) {
+      const T = A.taxi;
+      T.t += dt;
+      if (T.state === 'pickup') {
+        if (dist(P.x, P.z, T.from.x, T.from.z) < 6) {
+          T.state = 'dropoff';
+          G.missions.setObjective(T.to.x, T.to.z, 'Taxi: drop off the fare');
+          G.hud.toast('Passenger aboard — drop them off');
+        }
+      } else if (dist(P.x, P.z, T.to.x, T.to.z) < 6) {
+        const fare = 120 + Math.floor(Math.random() * 180);
+        G.cash += fare;
+        G.respect += 10;
+        G.audio.cash();
+        G.hud.toast(`Fare paid +$${fare}`);
+        A.taxi = null;
+        G.missions.clearObjective();
+        if (G.missions.mission()) G.missions.restoreObjective();
+      }
+      if (T.t > 240) {
+        G.hud.toast('The fare gave up waiting');
+        A.taxi = null;
+        G.missions.clearObjective();
+        if (G.missions.mission()) G.missions.restoreObjective();
+      }
+    }
+  };
+  return A;
 }

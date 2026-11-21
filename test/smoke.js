@@ -1,56 +1,79 @@
-// test/smoke.js — Solmar Bay v3: a fast smoke test.
-// Loads the game, starts it, and screenshots the four staged shots,
-// reporting console/page errors. Usage: node test/smoke.js
-import { chromium } from '/home/hatch/workspace/makefun/test-tools/node_modules/playwright-core/index.mjs';
-import { spawn } from 'node:child_process';
-import { writeFileSync, mkdirSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+// Smoke test: loads the game, takes the 4 staged shots, pixel-checks
+// each (unique colour count + file size), and reports console/page errors.
+// Usage: node test/smoke.js [outdir]
+import { createRequire } from 'node:module';
+const require = createRequire('/tmp/gta6-test/package.json');
+const { chromium } = require('playwright-core');
+const { PNG } = require('pngjs');
+import http from 'node:http';
+import { readFile } from 'node:fs/promises';
+import { statSync } from 'node:fs';
+import { join, dirname, extname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const repo = dirname(dirname(fileURLToPath(import.meta.url)));
-const node = process.execPath;
+const repo = join(dirname(fileURLToPath(import.meta.url)), '..');
+const outDir = process.argv[2] || join(repo, 'screenshots');
+const root = join(repo, 'game');
+const types = { '.html': 'text/html', '.js': 'text/javascript', '.json': 'application/json' };
 
-async function main() {
-  const server = spawn(node, ['serve.ts'], { cwd: repo, stdio: 'ignore' });
-  await new Promise((r) => setTimeout(r, 2500));
-  const browser = await chromium.launch({
-    executablePath: '/home/hatch/.cache/puppeteer/chrome/linux-156.0.8078.47/chrome-linux64/chrome',
-    args: ['--no-sandbox', '--enable-unsafe-swiftshader', '--use-gl=angle', '--use-angle=swiftshader', '--disable-gpu-sandbox', '--mute-audio'],
-  });
-  const errors = [];
+const server = http.createServer(async (req, res) => {
   try {
-    const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
-    page.on('console', (m) => { if (m.type() === 'error') errors.push('console: ' + m.text()); });
-    page.on('pageerror', (e) => errors.push('pageerror: ' + e.message));
-    page.on('requestfailed', (r) => errors.push('reqfail: ' + r.url()));
+    let p = decodeURIComponent(new URL(req.url, 'http://x').pathname);
+    if (p === '/') p = '/index.html';
+    const data = await readFile(join(root, p));
+    res.writeHead(200, { 'Content-Type': types[extname(p)] || 'application/octet-stream' });
+    res.end(data);
+  } catch { res.writeHead(404); res.end(); }
+});
+await new Promise((r) => server.listen(0, r));
+const port = server.address().port;
 
-    // Title screen.
-    await page.goto('http://localhost:8080/index.html?seed=7', { waitUntil: 'load', timeout: 30000 });
-    await page.waitForTimeout(2500);
-    const hasG = await page.evaluate(() => !!window.G);
-    console.log('window.G present:', hasG);
-    await page.keyboard.press('Enter');
-    await page.waitForTimeout(3000);
-    const state = await page.evaluate(() => window.G.debug.state);
-    console.log('state after Enter:', state);
-    const pos = await page.evaluate(() => window.G.debug.player);
-    console.log('player:', JSON.stringify(pos));
-    await page.screenshot({ path: '/tmp/gta6-test/smoke-title.jpg', type: 'jpeg', quality: 82 });
+const browser = await chromium.launch({
+  executablePath: process.env.CHROME || '/home/hatch/.cache/puppeteer/chrome/linux-156.0.8078.47/chrome-linux64/chrome',
+  args: ['--no-sandbox', '--enable-unsafe-swiftshader', '--use-gl=angle', '--use-angle=swiftshader'],
+});
+const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
+const errors = [];
+page.on('console', (m) => { if (m.type() === 'error') errors.push('console: ' + m.text()); });
+page.on('pageerror', (e) => errors.push('pageerror: ' + e.message));
 
-    // The four staged shots.
-    for (const shot of ['chase', 'mission', 'drive', 'start']) {
-      await page.goto(`http://localhost:8080/index.html?shot=${shot}&seed=7`, { waitUntil: 'load', timeout: 30000 });
-      await page.waitForTimeout(6000);
-      const st = await page.evaluate(() => ({ state: window.G.debug.state, mission: window.G.debug.missionName, stars: window.G.debug.stars, enemies: window.G.debug.enemies, cam: [Math.round(window.G.camera.camera.position.x), Math.round(window.G.camera.camera.position.y), Math.round(window.G.camera.camera.position.z)], camState: { px: Math.round(window.G.camera.state.px * 10) / 10, pz: Math.round(window.G.camera.state.pz * 10) / 10, orbit: Math.round(window.G.camera.state.orbit * 100) / 100, dist: window.G.camera.state.dist }, player: window.G.debug.player, cops: window.G.debug.cops.map((c) => [Math.round(c.x), Math.round(c.z)]) }));
-      console.log(`shot ${shot}:`, JSON.stringify(st));
-      await page.screenshot({ path: `/tmp/gta6-test/smoke-${shot}.jpg`, type: 'jpeg', quality: 82 });
-    }
-  } finally {
-    await browser.close();
-    server.kill();
-  }
-  console.log('ERRORS (' + errors.length + '):');
-  for (const e of errors.slice(0, 20)) console.log('  ' + e);
-  process.exit(errors.length ? 1 : 0);
+async function colourCount(pngPath) {
+  const png = PNG.sync.read(await readFile(pngPath));
+  const set = new Set();
+  const d = png.data;
+  for (let i = 0; i < d.length; i += 4) set.add((d[i] << 16) | (d[i + 1] << 8) | d[i + 2]);
+  return set.size;
 }
-main();
+
+const shots = [
+  ['1-chase.jpg', 'chase', 1000, true], ['2-mission.jpg', 'mission', 2500, false],
+  ['3-drive.jpg', 'drive', 2500, true], ['4-start.jpg', 'start', 2500, false],
+];
+const results = [];
+for (const [file, name, wait, holdW] of shots) {
+  await page.goto(`http://localhost:${port}/index.html?shot=${name}&seed=7`, { waitUntil: 'load' });
+  await page.waitForFunction(() => window.G && window.G.ready, null, { timeout: 20000 });
+  // Hold W for the driving shots so the car is actually moving (with
+  // police in pursuit) when the shutter falls — the staged speed bleeds
+  // off to 0 within half a second of releasing the key, so the key
+  // stays down THROUGH both screenshots, not just the wait.
+  if (holdW) await page.keyboard.down('KeyW');
+  await page.waitForTimeout(wait);
+  const path = join(outDir, file);
+  await page.screenshot({ path, type: 'png' });
+  const colours = await colourCount(path);
+  const { size } = statSync(path);
+  // Re-save as JPEG for the entry (PNG is only for counting).
+  const jpg = path.replace(/\.jpg$/, '.jpg');
+  await page.screenshot({ path: jpg, type: 'jpeg', quality: 88 });
+  if (holdW) await page.keyboard.up('KeyW');
+  const jpgSize = statSync(jpg).size;
+  results.push({ file, size: jpgSize, colours });
+  console.log(`${file}: ${(jpgSize / 1024).toFixed(0)} KiB, ${colours.toLocaleString()} colours`);
+}
+console.log('errors:', errors.length ? errors.join('\n') : 'none');
+await browser.close();
+server.close();
+const bad = results.filter((r) => r.colours < 150 || r.size > 256 * 1024);
+if (bad.length || errors.length) { console.log('SMOKE FAIL'); process.exit(1); }
+console.log('SMOKE PASS');

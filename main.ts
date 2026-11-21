@@ -1,38 +1,26 @@
-// main.ts — Solmar Bay v3: the entrypoint.
-// One job: copy game/ and screenshots/ into the output directory and
-// write dossier.json with the vendored make.fun library, byte-identical
-// on every run (sorted copy order, no timestamps anywhere in the output).
-//
-// The output directory itself is never removed — only its contents are —
-// because the grader mounts /output read-only and removing it fails.
-
-import { buildDossier } from './vendor/makefun-game.ts';
-import { cpSync, existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+// SOLMAR BAY — entry program (Node 22, standard library only).
+// Copies game/ and screenshots/ into the output directory and writes
+// /output/dossier.json with the kit's vendored library. Runs twice;
+// both runs write the same bytes.
+import { cpSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { buildDossier } from './vendor/makefun-game.ts';
 
-const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)));
-const outDir = process.env.MAKEFUN_OUTPUT_DIR
-  ? resolve(process.env.MAKEFUN_OUTPUT_DIR)
-  : '/output';
+const repo = dirname(fileURLToPath(import.meta.url));
+const out = process.env.MAKEFUN_OUTPUT_DIR || '/output';
 
-// Clear only the contents of the output directory, never the directory.
-mkdirSync(outDir, { recursive: true });
-for (const name of readdirSync(outDir).sort()) {
-  rmSync(join(outDir, name), { recursive: true, force: true });
-}
+rmSync(out, { recursive: true, force: true });
+mkdirSync(out, { recursive: true });
+cpSync(join(repo, 'game'), join(out, 'game'), { recursive: true });
+cpSync(join(repo, 'screenshots'), join(out, 'screenshots'), { recursive: true });
 
-// Copy game/ then screenshots/, in sorted order, contents only.
-for (const sub of ['game', 'screenshots']) {
-  const src = join(repoRoot, sub);
-  if (!existsSync(src)) continue;
-  mkdirSync(join(outDir, sub), { recursive: true });
-  for (const name of readdirSync(src).sort()) {
-    cpSync(join(src, name), join(outDir, sub, name), { recursive: true });
-  }
-}
-
-// The dossier is built from the repository (game/ + screenshots/).
-const dossier = buildDossier(repoRoot, { text_max_bytes: 163840 });
-writeFileSync(join(outDir, 'dossier.json'), dossier);
-console.log(`solmar-bay v3: wrote ${outDir} (dossier.json ${dossier.length} bytes)`);
+const dossier = buildDossier(out, {
+  text_max_bytes: 163840,
+  screenshots: { max: 4, max_bytes: 256 * 1024 },
+  game_max_files: 993,
+  game_max_bytes: 48 * 1024 * 1024,
+  game_path_max_bytes: 1000,
+});
+writeFileSync(join(out, 'dossier.json'), dossier);
+console.log(`dossier.json: ${dossier.length} bytes`);

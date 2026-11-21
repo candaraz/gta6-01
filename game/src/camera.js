@@ -1,127 +1,68 @@
-// camera.js — Solmar Bay v3: the chase camera.
-// One job: keep the camera LOW and CLOSE behind the player or the car, so
-// the street, the towers and the action fill the frame — never a bird's
-// eye. Mouse drag orbits; the camera eases to its target so it feels
-// weighted, not glued.
-//
-// v2's camera sat ~26 m up and far back, which is why its screenshots
-// were flat and empty. This one rides ~3 m up and ~8 m back.
-
+// Third-person camera: chase cam behind the car, level chest-height
+// cam on foot. Mouse drag orbits; yaw snaps instantly when the driver
+// (or a staged shot) asks, so shots are never taken mid-swing.
 import * as THREE from 'three';
+import { angDiff, clamp } from './random.js';
 
 export function createCamera(G) {
-  const camera = new THREE.PerspectiveCamera(62, 1280 / 800, 0.1, 2000);
-  const cam = {
-    camera,
-    yaw: Math.PI,        // direction the camera looks (world angle)
-    pitch: 0.24,         // how far down the camera looks
-    dist: 7.5,           // distance behind the target
-    height: 3.1,         // height above the target
-    px: 0, py: 4, pz: 0, // smoothed camera position
-    lookX: 0, lookY: 1.4, lookZ: 0,
-    shakeX: 0, shakeY: 0,
+  const cam = new THREE.PerspectiveCamera(62, window.innerWidth / window.innerHeight, 0.1, 1200);
+  G.scene.add(cam);
+  const C = {
+    cam, yaw: Math.PI / 2, pitch: 0.32, dist: 11, height: 4.2,
+    target: new THREE.Vector3(0, 1.5, 48),
+    shake: 0,
   };
-  camera.position.set(0, 4, -8);
-  camera.lookAt(0, 1.4, 0);
-
-  function update(dt, input) {
-    const p = G.player.p;
-    // Orbit with the mouse drag.
-    if (input.mouse.dx || input.mouse.dy) {
-      cam.yaw -= input.mouse.dx * 0.0042;
-      cam.pitch = Math.max(0.05, Math.min(0.85, cam.pitch + input.mouse.dy * 0.003));
+  G.cameraRig = C;
+  window.addEventListener('resize', () => {
+    cam.aspect = window.innerWidth / window.innerHeight;
+    cam.updateProjectionMatrix();
+    G.renderer.setSize(window.innerWidth, window.innerHeight);
+  });
+  C.snapBehind = function (heading) {
+    // Face the same way the player faces: camera forward (sin yaw, cos yaw)
+    // must equal the heading direction (cos h, sin h), so yaw = PI/2 - h.
+    C.yaw = Math.PI / 2 - heading;
+  };
+  C.setShot = function (yaw, pitch, dist, height) {
+    C.yaw = yaw; C.pitch = pitch; C.dist = dist; C.height = height;
+  };
+  C.step = function (dt) {
+    const I = G.input;
+    C.yaw -= I.mouseDX * 0.004;
+    C.pitch = clamp(C.pitch + I.mouseDY * 0.003, 0.02, 1.1);
+    const P = G.player;
+    const inCar = !!P.vehicle;
+    // On foot the camera drops to chest height and levels out, so the
+    // crosshair ray runs flat and shots reach enemies at range instead
+    // of diving underground a few metres out.
+    const wantPitch = inCar ? 0.14 : 0.02;
+    C.pitch += (wantPitch - C.pitch) * Math.min(1, dt * 1.2);
+    const wantDist = inCar ? 12 : 5.5;
+    const wantHeight = inCar ? 3.0 : 1.7;
+    C.dist += (wantDist - C.dist) * Math.min(1, dt * 4);
+    C.height += (wantHeight - C.height) * Math.min(1, dt * 4);
+    const tx = P.x, tz = P.z;
+    const ty = inCar ? 1.6 : 1.7;
+    C.target.x += (tx - C.target.x) * Math.min(1, dt * 10);
+    C.target.y += (ty - C.target.y) * Math.min(1, dt * 10);
+    C.target.z += (tz - C.target.z) * Math.min(1, dt * 10);
+    const cx = C.target.x - Math.sin(C.yaw) * Math.cos(C.pitch) * C.dist;
+    const cz = C.target.z - Math.cos(C.yaw) * Math.cos(C.pitch) * C.dist;
+    const cy = C.target.y + Math.sin(C.pitch) * C.dist + (C.height - 1.7);
+    let sx = cx, sz = cz;
+    if (C.shake > 0) {
+      sx += (Math.random() - 0.5) * C.shake;
+      sz += (Math.random() - 0.5) * C.shake;
+      C.shake = Math.max(0, C.shake - dt * 2);
     }
-    const inCar = !p.onFoot && p.car;
-    const inBoat = p.boat;
-    cam.dist = inBoat ? 11 : inCar ? 7.5 : 7;
-    cam.height = inBoat ? 4.2 : inCar ? 2.7 : 3.0;
-    // The camera wants to sit behind the target's heading, eased toward
-    // the orbit yaw so a drag swings it around smoothly.
-    let wantYaw = cam.yaw;
-    if (!input.mouse.down) {
-      // Ease the orbit yaw back behind the player's heading when not dragging.
-      let d = p.heading - cam.yaw;
-      while (d > Math.PI) d -= Math.PI * 2;
-      while (d < -Math.PI) d += Math.PI * 2;
-      wantYaw = cam.yaw + d * Math.min(1, dt * 1.4);
-      cam.yaw = wantYaw;
+    cam.position.set(sx, Math.max(1.2, cy), sz);
+    cam.lookAt(C.target.x, C.target.y, C.target.z);
+    // The golden sun follows the player so shadows stay near.
+    if (G.sun) {
+      G.sun.position.set(P.x - 120, 160, P.z - 90);
+      G.sun.target.position.set(P.x, 0, P.z);
+      G.sun.target.updateMatrixWorld();
     }
-    // Target: the player / car, plus a look-ahead so the street ahead is visible.
-    const tx = p.x + Math.sin(p.heading) * (inCar ? 6 : 3.5);
-    const tz = p.z + Math.cos(p.heading) * (inCar ? 6 : 3.5);
-    const ty = (inCar ? 1.1 : 1.2) + p.y; // 1.2 = chest height: the crosshair sits on a distant chest, so the shot lands on it
-    const cx = p.x - Math.sin(cam.yaw) * cam.dist * Math.cos(cam.pitch);
-    const cz = p.z - Math.cos(cam.yaw) * cam.dist * Math.cos(cam.pitch);
-    // Lift above the look target: nearly level on foot (0.02) so the
-    // crosshair sits on a distant chest and the shot stays level;
-    // elevated in a vehicle (0.15) so the road ahead reads.
-    const lift = (inCar || inBoat) ? 0.15 : 0.02;
-    const cy = ty + cam.height * Math.sin(cam.pitch) + cam.height * lift;
-    // Smooth the camera (a little lag reads as weight).
-    const k = 1 - Math.exp(-dt * 7);
-    cam.px += (cx - cam.px) * k;
-    cam.py += (cy - cam.py) * k;
-    cam.pz += (cz - cam.pz) * k;
-    cam.lookX += (tx - cam.lookX) * k;
-    cam.lookY += (ty - cam.lookY) * k;
-    cam.lookZ += (tz - cam.lookZ) * k;
-    // Screen shake.
-    const s = G.effects.shake;
-    cam.shakeX = (Math.random() - 0.5) * s * 0.5;
-    cam.shakeY = (Math.random() - 0.5) * s * 0.4;
-    camera.position.set(cam.px + cam.shakeX, cam.py + cam.shakeY, cam.pz);
-    camera.lookAt(cam.lookX, cam.lookY, cam.lookZ);
-    camera.updateMatrixWorld();
-  }
-
-  // A world ray through the screen centre (the crosshair) for shooting.
-  function crosshairRay() {
-    // updateMatrixWorld first: if a frame is ever skipped (headless
-    // driver, lag spike) the camera's matrixWorld is stale and the
-    // ray would point where the camera WAS, not where it is — every
-    // shot would miss a target the crosshair is sitting on.
-    camera.updateMatrixWorld();
-    const dir = new THREE.Vector3();
-    camera.getWorldDirection(dir);
-    return { origin: camera.position.clone(), dir };
-  }
-
-  // Project a world point to screen pixels (for the driver to aim).
-  function toScreen(x, y, z, w, h) {
-    const v = new THREE.Vector3(x, y, z).project(camera);
-    return { x: (v.x + 1) / 2 * w, y: (1 - v.y) / 2 * h, behind: v.z > 1 };
-  }
-
-  // Snap the camera to its target at once (used after staging a shot, so
-  // the first frame is already settled behind the player / car). This
-  // also snaps the orbit yaw behind the player's heading — the yaw eases
-  // slowly (1.4/s) and at low frame rates would otherwise still be
-  // swinging around from the title screen when the shot is taken.
-  function snap() {
-    const p = G.player.p;
-    const inCar = !p.onFoot && p.car;
-    const inBoat = p.boat;
-    const d = inBoat ? 11 : inCar ? 7.5 : 7;
-    const h = inBoat ? 4.2 : inCar ? 2.7 : 3.0;
-    const tx = p.x + Math.sin(p.heading) * (inCar ? 6 : 3.5);
-    const tz = p.z + Math.cos(p.heading) * (inCar ? 6 : 3.5);
-    const ty = (inCar ? 1.1 : 1.2) + p.y; // 1.2 = chest height: the crosshair sits on a distant chest, so the shot lands on it
-    cam.yaw = p.heading;
-    cam.px = p.x - Math.sin(cam.yaw) * d * Math.cos(cam.pitch);
-    cam.pz = p.z - Math.cos(cam.yaw) * d * Math.cos(cam.pitch);
-    const lift = (inCar || inBoat) ? 0.15 : 0.02;
-    cam.py = ty + h * Math.sin(cam.pitch) + h * lift;
-    cam.lookX = tx; cam.lookY = ty; cam.lookZ = tz;
-    camera.position.set(cam.px, cam.py, cam.pz);
-    camera.lookAt(tx, ty, tz);
-    camera.updateMatrixWorld();
-  }
-
-  // Return the live state object itself (not a spread copy): the spread
-  // copies yaw/pitch/dist by value, so G.camera.yaw would freeze at its
-  // initial PI and on-foot movement — which reads cam.yaw — would always
-  // walk north regardless of where the camera points. Attaching the
-  // methods to cam keeps every property live.
-  Object.assign(cam, { state: cam, update, snap, crosshairRay, toScreen });
-  return cam;
+  };
+  return C;
 }

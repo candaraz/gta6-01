@@ -1,49 +1,54 @@
-// save.js — Solmar Bay v3: save + Continue.
-// One job: write the player's progress to localStorage and read it back.
-// The title screen offers Continue when a save exists.
-
-const KEY = 'solmarbay-v3-save';
+// Save / load to localStorage: cash, respect, story progress, weapons,
+// coins, garage level, position and vehicle.
+const KEY = 'solmar-bay-save-v3';
 
 export function createSave(G) {
-  function write() {
-    const p = G.player.p;
-    const data = {
-      v: 3, cash: p.cash, respect: p.respect, health: p.health,
-      mission: G.missions.current, x: p.x, z: p.z,
-      weapon: p.weapon,
-      weapons: Object.fromEntries(Object.entries(p.weapons).map(([k, w]) => [k, w.owned ? 1 : 0])),
-      garageLevel: p.garageLevel, coins: p.coins,
-      coinsTaken: G.garage.coins.filter((c) => c.taken).map((c) => c.slot),
-      savedAt: Date.now(),
-    };
-    try { localStorage.setItem(KEY, JSON.stringify(data)); return true; }
-    catch (e) { return false; }
-  }
-  function read() {
-    try {
-      const raw = localStorage.getItem(KEY);
-      if (!raw) return null;
-      const d = JSON.parse(raw);
-      if (!d || d.v !== 3) return null;
-      return d;
-    } catch (e) { return null; }
-  }
-  function apply(d) {
-    const p = G.player.p;
-    p.cash = d.cash; p.respect = d.respect; p.health = d.health;
-    p.x = d.x; p.z = d.z; p.y = 0; p.heading = Math.PI;
-    p.weapon = d.weapon || 'pistol';
-    p.garageLevel = d.garageLevel || 0;
-    p.coins = d.coins || 0;
-    for (const [k, v] of Object.entries(d.weapons || {})) {
-      if (v) G.player.giveWeapon(k);
-    }
-    for (const slot of d.coinsTaken || []) {
-      const c = G.garage.coins[slot];
-      if (c) c.taken = true;
-    }
-    G.missions.setCurrent(Math.min(9, d.mission || 0));
-  }
-  function clear() { try { localStorage.removeItem(KEY); } catch (e) {} }
-  return { write, read, apply, clear };
+  const S = {
+    hasSave() {
+      try { return !!localStorage.getItem(KEY); } catch (e) { return false; }
+    },
+    saveGame() {
+      const P = G.player;
+      const data = {
+        cash: G.cash, respect: G.respect,
+        mission: G.missions.index,
+        x: P.x, z: P.z, heading: P.heading,
+        health: P.health,
+        weapons: Object.keys(G.combat.owned).filter((k) => G.combat.owned[k]),
+        mag: G.combat.mag, reserve: G.combat.reserve,
+        coins: G.activities.coins,
+        coinsFound: G.activities.coinMeshes.filter((c) => c.taken).map((c) => c.i),
+        engineLevel: G.activities.engineLevel,
+        station: G.audio.station,
+      };
+      try { localStorage.setItem(KEY, JSON.stringify(data)); } catch (e) { /* private mode */ }
+    },
+    loadGame() {
+      let data = null;
+      try { data = JSON.parse(localStorage.getItem(KEY)); } catch (e) { return false; }
+      if (!data) return false;
+      G.cash = data.cash; G.respect = data.respect;
+      G.player.x = data.x; G.player.z = data.z; G.player.heading = data.heading || 0;
+      G.player.health = data.health || 100;
+      G.player.mesh.position.set(data.x, 0, data.z);
+      for (const k of data.weapons || []) G.combat.give(k, 0);
+      G.combat.mag = Object.assign(G.combat.mag, data.mag || {});
+      G.combat.reserve = Object.assign(G.combat.reserve, data.reserve || {});
+      G.activities.engineLevel = data.engineLevel || 0;
+      if (typeof data.station === 'number') G.audio.setStation(data.station);
+      for (const i of data.coinsFound || []) {
+        const c = G.activities.coinMeshes[i];
+        if (c) { c.taken = true; c.mesh.visible = false; G.activities.coins++; }
+      }
+      // Index 10 is the completed campaign (no active mission);
+      // startMission handles it by showing the Bay King state, so
+      // clamp to 10, not 9 — clamping to 9 would resurrect m10.
+      G.missions.startMission(Math.min(data.mission || 0, 10));
+      G.cameraRig.snapBehind(G.player.heading);
+      return true;
+    },
+    clear() { try { localStorage.removeItem(KEY); } catch (e) {} },
+  };
+  G.save = S;
+  return S;
 }

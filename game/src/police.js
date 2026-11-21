@@ -1,194 +1,151 @@
-// police.js — Solmar Bay v3: the wanted level and the Solmar PD.
-// One job: stars, pursuit, roadblocks, the helicopter, busts, and decay.
-//
-// Cops steer along the road grid (Manhattan) toward the player, never
-// straight through buildings — the v2 fix — and reverse out when pinned.
-
+// Police: five stars of heat. Patrol cruisers pursue along the grid,
+// ram and bust a stopped player, roadblocks rise at three stars and a
+// helicopter circles at four. Heat fades when the player hides.
+// Bust has grace: 12 s after a vault hold, 4 s after stepping out.
 import * as THREE from 'three';
-import { TUNE } from './config.js';
-import { makeRng, pick } from './random.js';
+import { CFG } from './config.js';
+import { makeVehicle, steerToward, removeVehicle } from './vehicles.js';
+import { clamp, dist } from './random.js';
+import { damagePlayer } from './player.js';
 
 export function createPolice(G) {
-  const scene = G.scene;
-  const rng = makeRng(31337);
-  let stars = 0;
-  let hiddenTimer = 0;
-  let roadblockTimer = 0;
-  const cops = []; // {car, stuckT, reverseT}
-  let heli = null; // {group, rotor, angle}
+  const P = {
+    wanted: 0, cops: [], heli: null, heliAngle: 0,
+    roadblocks: [], decayTimer: 0, bustTimer: 0, sirenOn: false,
+  };
+  G.police = P;
 
-  function addStars(n) {
-    stars = Math.min(5, stars + n);
-    if (stars > 0) hiddenTimer = 0;
-    G.hud.setStars(stars);
-  }
-  function setStars(n) {
-    stars = Math.max(0, Math.min(5, n));
-    G.hud.setStars(stars);
-  }
-  function nearestCopDist(x, z) {
-    let bd = 1e9;
-    for (const c of cops) bd = Math.min(bd, Math.hypot(c.car.x - x, c.car.z - z));
-    return bd;
-  }
+  P.setWanted = function (n) {
+    P.wanted = clamp(n, 0, 5);
+    P.syncCops();
+  };
+  P.addWanted = function (n) { P.setWanted(P.wanted + n); };
 
-  function spawnCopNear(x, z, dist) {
-    // Spawn on a road near the player, at the requested distance.
-    for (let tries = 0; tries < 12; tries++) {
-      const a = rng() * Math.PI * 2;
-      const cx = x + Math.cos(a) * dist, cz = z + Math.sin(a) * dist;
-      const rp = G.city.nearestRoadPoint(cx, cz);
-      if (!rp) continue;
-      const car = G.vehicles.spawnCar('interceptor', rp.x, rp.z, 0, 'police');
-      if (!car) return null;
-      car.heading = rp.along === 'x' ? Math.PI / 2 : 0;
-      const cop = { car, stuckT: 0, reverseT: 0, lastX: rp.x, lastZ: rp.z, staged: false, cruiseSpeed: 0 };
-      cops.push(cop);
-      return cop;
+  P.syncCops = function () {
+    // Desired cruisers on scene: 0,1,2,3,4,5 by stars.
+    const want = P.wanted;
+    while (P.cops.length < want) {
+      const px = G.player.x, pz = G.player.z;
+      const a = Math.random() * Math.PI * 2;
+      const v = makeVehicle(G, 'interceptor', px + Math.cos(a) * 60, pz + Math.sin(a) * 60,
+        Math.random() * Math.PI * 2, 'police');
+      v.driver = 'npc'; v.cruise = 0;
+      P.cops.push(v);
     }
-    return null;
-  }
-
-  function spawnRoadblock() {
-    const p = G.player.p;
-    // Two cruisers parked across the road ahead of the player.
-    const fx = Math.sin(p.heading), fz = Math.cos(p.heading);
-    const bx = p.x + fx * 55, bz = p.z + fz * 55;
-    const rp = G.city.nearestRoadPoint(bx, bz);
-    if (!rp) return;
-    for (const side of [-1, 1]) {
-      const car = G.vehicles.spawnCar('interceptor', rp.x + (rp.along === 'x' ? side * 2.4 : 0), rp.z + (rp.along === 'x' ? 0 : side * 2.4), rp.along === 'x' ? Math.PI / 2 : 0, 'police');
-      if (car) { car.roadblock = true; cops.push({ car, stuckT: 0, reverseT: 0, lastX: car.x, lastZ: car.z }); }
+    while (P.cops.length > want) {
+      const v = P.cops.pop();
+      removeVehicle(G, v);
     }
-  }
-
-  function buildHeli() {
-    const g = new THREE.Group();
-    const body = new THREE.Mesh(new THREE.BoxGeometry(3.4, 1.6, 5.2), new THREE.MeshLambertMaterial({ color: 0x1a1d24 }));
-    g.add(body);
-    const tail = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.7, 4.4), new THREE.MeshLambertMaterial({ color: 0x1a1d24 }));
-    tail.position.set(0, 0.2, -4.2); g.add(tail);
-    const rotor = new THREE.Mesh(new THREE.BoxGeometry(11, 0.12, 0.7), new THREE.MeshLambertMaterial({ color: 0x3a3a3e }));
-    rotor.position.y = 1.1; g.add(rotor);
-    const skid = new THREE.Mesh(new THREE.BoxGeometry(2.6, 0.2, 3.4), new THREE.MeshLambertMaterial({ color: 0x3a3a3e }));
-    skid.position.y = -1.1; g.add(skid);
-    // Searchlight cone pointing down.
-    const coneGeo = new THREE.ConeGeometry(7, 42, 12, 1, true);
-    coneGeo.translate(0, -21, 0);
-    const cone = new THREE.Mesh(coneGeo, new THREE.MeshBasicMaterial({ color: 0xfff2b0, transparent: true, opacity: 0.16, side: THREE.DoubleSide, depthWrite: false }));
-    cone.position.y = -1; g.add(cone);
-    g.visible = false;
-    scene.add(g);
-    return { group: g, rotor, angle: 0 };
-  }
-
-  function angleDiff(a, b) {
-    let d = a - b;
-    while (d > Math.PI) d -= Math.PI * 2;
-    while (d < -Math.PI) d += Math.PI * 2;
-    return d;
-  }
-
-  function update(dt) {
-    const p = G.player.p;
-    // Wanted decay: hidden (no cop within 55 m) for 9 s loses a star.
-    if (stars > 0) {
-      const near = nearestCopDist(p.x, p.z);
-      if (near > 55 && !heli) {
-        hiddenTimer += dt;
-        if (hiddenTimer > TUNE.wantedDecayHidden) { setStars(stars - 1); hiddenTimer = 0; }
-      } else hiddenTimer = 0;
+    // Roadblocks at 3+ stars: two cruisers parked across the road ahead.
+    if (P.wanted >= 3 && P.roadblocks.length === 0) {
+      const h = G.player.heading || 0;
+      for (const side of [-1, 1]) {
+        const bx = G.player.x + Math.cos(h) * 70 + Math.cos(h + Math.PI / 2) * side * 4;
+        const bz = G.player.z + Math.sin(h) * 70 + Math.sin(h + Math.PI / 2) * side * 4;
+        const v = makeVehicle(G, 'interceptor', bx, bz, h + Math.PI / 2, 'police');
+        v.driver = null; v.kind = 'parked';
+        P.roadblocks.push(v);
+      }
     }
-    // Keep the right number of pursuit cops on the road.
-    const want = stars === 0 ? 0 : Math.min(6, stars + 1);
-    let active = 0;
-    for (const c of [...cops]) {
-      if (!c.car.alive) { cops.splice(cops.indexOf(c), 1); continue; }
-      active++;
-    }
-    while (active < want) {
-      if (!spawnCopNear(p.x, p.z, 55 + rng() * 40)) break;
-      active++;
-    }
-    // Roadblocks at 3+ stars, one every ~25 s.
-    if (stars >= 3) {
-      roadblockTimer -= dt;
-      if (roadblockTimer <= 0) { spawnRoadblock(); roadblockTimer = 25; }
+    if (P.wanted < 3) {
+      for (const v of P.roadblocks) removeVehicle(G, v);
+      P.roadblocks = [];
     }
     // Helicopter at 4+ stars.
-    if (stars >= 4 && !heli) heli = buildHeli();
-    if (heli) {
-      heli.group.visible = stars >= 4;
-      if (stars >= 4) {
-        heli.angle += dt * 0.35;
-        heli.group.position.set(p.x + Math.cos(heli.angle) * 34, 42, p.z + Math.sin(heli.angle) * 34);
-        heli.group.rotation.y = -Math.atan2(p.x - heli.group.position.x, p.z - heli.group.position.z);
-        heli.rotor.rotation.y += dt * 22;
-      }
+    if (P.wanted >= 4 && !P.heli) {
+      const g = new THREE.Group();
+      const body = new THREE.Mesh(new THREE.BoxGeometry(4, 1.4, 2),
+        new THREE.MeshLambertMaterial({ color: 0x222222 }));
+      const tail = new THREE.Mesh(new THREE.BoxGeometry(3, 0.5, 0.5),
+        new THREE.MeshLambertMaterial({ color: 0x222222 }));
+      tail.position.x = -3;
+      const rotor = new THREE.Mesh(new THREE.BoxGeometry(7, 0.1, 0.4),
+        new THREE.MeshLambertMaterial({ color: 0x888888 }));
+      rotor.position.y = 1;
+      const spot = new THREE.SpotLight(0xffffff, 200, 60, 0.3, 0.5);
+      spot.position.y = -1;
+      g.add(body, tail, rotor, spot);
+      g.userData.rotor = rotor; g.userData.spot = spot;
+      G.scene.add(g);
+      P.heli = g;
     }
-    // Sirens: on with heat, louder when a cop is close.
-    const near = nearestCopDist(p.x, p.z);
-    G.audio.setSiren(stars > 0, Math.max(0, 1 - near / 110));
-    G.audio.sirenTick(dt);
+    if (P.wanted < 4 && P.heli) {
+      G.scene.remove(P.heli);
+      P.heli = null;
+    }
+  };
 
-    // Drive each cop: Manhattan steering toward the player.
-    for (const c of [...cops]) {
-      const car = c.car;
-      if (!car.alive) continue;
-      if (car.roadblock) continue; // roadblock cars hold their post
-      // Staged cops (screenshot poses) just cruise straight alongside at
-      // their set speed — they never ram or bust, so the shot stays composed.
-      if (c.staged) {
-        const thr = car.speed < c.cruiseSpeed ? 1 : 0;
-        G.vehicles.stepCar(car, dt, thr, 0, 0, G.time);
-        continue;
-      }
-      const dx = p.x - car.x, dz = p.z - car.z;
-      const dist = Math.hypot(dx, dz);
-      // Target: first close the x gap along the current road, then the z gap.
-      let tx, tz;
-      if (Math.abs(dx) > 12) { tx = p.x; tz = car.z; }
-      else { tx = car.x; tz = p.z; }
-      const want = Math.atan2(tx - car.x, tz - car.z);
-      let steer = Math.max(-1, Math.min(1, angleDiff(want, car.heading) * 1.8));
-      // Ram when close: aim straight at the player.
-      if (dist < 14) steer = Math.max(-1, Math.min(1, angleDiff(Math.atan2(dx, dz), car.heading) * 1.8));
-      // Stuck detection: barely moving while trying -> reverse out.
-      const moved = Math.hypot(car.x - c.lastX, car.z - c.lastZ);
-      c.lastX = car.x; c.lastZ = car.z;
-      if (c.reverseT > 0) {
-        c.reverseT -= dt;
-        G.vehicles.stepCar(car, dt, -1, -steer, 0, G.time);
-        continue;
-      }
-      if (Math.abs(car.speed) < 1.5 && dist > 10) {
-        c.stuckT += dt;
-        if (c.stuckT > 2) { c.reverseT = 1.1; c.stuckT = 0; continue; }
-      } else c.stuckT = 0;
-      G.vehicles.stepCar(car, dt, 1, steer, 0, G.time);
-      // Ram impact: a hard hit on the player's car shakes and sparks.
-      if (dist < 4.4 && p.car && Math.abs(car.speed) > 8) {
-        G.effects.sparks({ x: p.x, y: 1, z: p.z });
-        G.audio.crash();
-        G.effects.addShake(0.3);
-        car.speed *= 0.5;
-      }
-      // Bust: on foot, a cop right on top of a slow player — but
-      // never mid-vault-crack, in the getaway grace after one, or
-      // in the 4 s grace after stepping out of a vehicle (see
-      // missions.isHoldStage / isHoldGrace, player.isExitGrace).
-      if (p.onFoot && dist < 2.6 && !p.dead && !G.missions.isHoldStage() && !G.missions.isHoldGrace() && !G.player.isExitGrace()) {
-        G.setState('busted');
+  P.step = function (dt) {
+    const Pl = G.player;
+    // Siren while wanted.
+    const siren = P.wanted > 0;
+    if (siren !== P.sirenOn) { P.sirenOn = siren; G.audio.setSiren(siren); }
+    // Heat fades when the player is slow and out of sight of cops.
+    if (P.wanted > 0) {
+      P.decayTimer += dt;
+      const nearCop = P.cops.some((c) => dist(c.x, c.z, Pl.x, Pl.z) < 45);
+      const speed = Math.abs(Pl.speed || 0);
+      if (!nearCop && speed < 3 && P.decayTimer > 14) {
+        P.decayTimer = 0;
+        P.setWanted(P.wanted - 1);
+        G.hud.toast('Heat fading…');
       }
     }
-    // Clean up cops when the heat is gone.
-    if (stars === 0) {
-      for (const c of [...cops]) {
-        G.vehicles.despawnCar(c.car);
-        cops.splice(cops.indexOf(c), 1);
+    // Pursuit: cruisers chase the player along the grid, ramming.
+    for (const c of P.cops) {
+      if (c.dead) continue;
+      const d = dist(c.x, c.z, Pl.x, Pl.z);
+      const want = Math.atan2(Pl.z - c.z, Pl.x - c.x);
+      // Manhattan steering: prefer the axis with the bigger gap.
+      const dx = Pl.x - c.x, dz = Pl.z - c.z;
+      let target = want;
+      if (Math.abs(dx) > Math.abs(dz) * 1.3) target = dx > 0 ? 0 : Math.PI;
+      else if (Math.abs(dz) > Math.abs(dx) * 1.3) target = dz > 0 ? Math.PI / 2 : -Math.PI / 2;
+      const turn = clamp(((target - c.heading + Math.PI * 3) % (Math.PI * 2)) - Math.PI, -2.2, 2.2);
+      c.heading += turn * dt;
+      const top = 34 + P.wanted * 2;
+      c.speed += ((d > 12 ? top : top * 0.55) - c.speed) * Math.min(1, dt * 1.2);
+      let nx = c.x + Math.cos(c.heading) * c.speed * dt;
+      let nz = c.z + Math.sin(c.heading) * c.speed * dt;
+      if (G.city.blocked(nx, nz, 1.6)) {
+        // Reverse out and re-aim (unstuck).
+        c.heading += Math.PI * 0.9;
+        c.speed = 6;
+        nx = c.x; nz = c.z;
       }
+      c.x = clamp(nx, -285, 285); c.z = clamp(nz, -285, 285);
+      c.mesh.position.set(c.x, 0, c.z);
+      c.mesh.rotation.y = -c.heading;
+      // Ram: bump the player's car, or bust a stopped player.
+      // On foot any stop near a cop counts; in a car the player must
+      // be nearly stopped (cops pull you out of a stalled car).
+      if (d < 4.5 && Pl.vehicle) {
+        Pl.vehicle.speed *= 0.85;
+        G.cameraRig.shake = 0.4;
+        if (Math.random() < dt * 2) G.audio.crash();
+      }
+      const stopped = !Pl.vehicle || Math.abs(Pl.vehicle.speed) < 1.5;
+      if (d < 3.5 && stopped && Pl.bustGrace <= 0 && Pl.exitGrace <= 0 && Pl.vaultGrace <= 0) {
+        P.bustTimer += dt;
+        if (P.bustTimer > 2.2) {
+          P.bustTimer = 0;
+          G.state = 'busted';
+          G.audio.busted();
+          G.hud.showBanner('BUSTED');
+          setTimeout(() => G.hud.respawn(), 1800);
+        }
+      } else if (d >= 3.5) P.bustTimer = Math.max(0, P.bustTimer - dt * 2);
     }
-  }
-
-  return { update, addStars, setStars, nearestCopDist, spawnCopNear, get stars() { return stars; }, cops };
+    // Helicopter circles overhead, spotlight on the player.
+    if (P.heli) {
+      P.heliAngle += dt * 0.5;
+      const hx = Pl.x + Math.cos(P.heliAngle) * 26;
+      const hz = Pl.z + Math.sin(P.heliAngle) * 26;
+      P.heli.position.set(hx, 42, hz);
+      P.heli.userData.rotor.rotation.y += dt * 20;
+      P.heli.userData.spot.target.position.set(Pl.x, 0, Pl.z);
+      P.heli.userData.spot.target.updateMatrixWorld();
+    }
+  };
+  return P;
 }
