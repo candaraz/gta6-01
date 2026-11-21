@@ -1,144 +1,196 @@
-// garage.js — the three interactable spots: Sol's Garage (vehicle
-// upgrades), Ivy's Arms (weapons and ammo) and the safehouses (save,
-// heal, lose the heat). Menus are DOM overlays; E opens, Esc closes.
-import { UPGRADES, WEAPONS } from './config.js';
-import { dist } from './random.js';
+// garage.js — Solmar Bay v3: the side economy.
+// One job: everything that pays outside the story — garage engine upgrades,
+// the gun shop, safehouses, street races (T in a car), taxi fares (T on
+// foot), and the 20 hidden Bay Coins.
 
-export class Garage {
-  constructor() {
-    this.open = null; // 'garage' | 'gunshop' | 'safehouse'
-    this.overlay = null;
-    this._buildOverlay();
+import * as THREE from 'three';
+import { TUNE, AVENUES } from './config.js';
+import { makeRng, pick } from './random.js';
+
+const COIN_SPOTS = [
+  [0, 232], [-72, -64], [48, -16], [-24, 40], [24, 32], [96, 88], [280, 152],
+  [260, -32], [250, 12], [296, 8], [0, 288], [144, 288], [288, 144], [-168, 168],
+  [168, -168], [-264, 72], [72, 216], [-96, -96], [96, -96], [-96, 96],
+];
+
+const RACE_CIRCUITS = [
+  { name: 'Downtown Loop', pts: [[0, -48], [96, -48], [96, 48], [0, 48], [-48, 48], [-48, -48]], par: 75 },
+  { name: 'Coast Run', pts: [[288, -96], [288, 96], [288, 240], [144, 288], [0, 288], [-48, 240]], par: 95 },
+  { name: 'Yards Sprint', pts: [[-96, -240], [96, -240], [192, -240], [192, -144], [96, -144], [-96, -144]], par: 80 },
+];
+
+export function createGarage(G) {
+  const scene = G.scene;
+  const dummy = new THREE.Object3D();
+  // Bay Coins: spinning gold discs.
+  const coinGeo = new THREE.CylinderGeometry(0.7, 0.7, 0.14, 14);
+  coinGeo.rotateX(Math.PI / 2);
+  const coinMat = new THREE.MeshBasicMaterial({ color: 0xffc21f });
+  const coinMesh = new THREE.InstancedMesh(coinGeo, coinMat, COIN_SPOTS.length);
+  coinMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+  coinMesh.frustumCulled = false;
+  scene.add(coinMesh);
+  const hide = new THREE.Matrix4().makeScale(0, 0, 0);
+  const coins = COIN_SPOTS.map(([x, z], i) => ({ x, z, taken: false, slot: i, bob: i * 1.3 }));
+  // Race gate markers reuse the mission marker style: small gold diamonds.
+  const gateGeo = new THREE.OctahedronGeometry(1.2);
+  const gateMat = new THREE.MeshBasicMaterial({ color: 0xffc21f });
+  const gateMesh = new THREE.InstancedMesh(gateGeo, gateMat, 8);
+  gateMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+  gateMesh.frustumCulled = false;
+  scene.add(gateMesh);
+  for (let i = 0; i < 8; i++) gateMesh.setMatrixAt(i, hide);
+
+  const rng = makeRng(2026);
+  let race = null;      // {circuit, idx, t}
+  let fare = null;      // {stage, px, pz, dx, dz}
+  let shopMsg = '';
+
+  function near(x, z, r) {
+    const p = G.player.p;
+    return Math.hypot(p.x - x, p.z - z) < r;
   }
 
-  _buildOverlay() {
-    const el = document.createElement('div');
-    el.id = 'shop-overlay';
-    el.style.cssText = 'position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);width:420px;max-width:90vw;background:rgba(10,14,20,.92);border:2px solid #f2c200;color:#eee;font-family:system-ui,sans-serif;padding:18px 22px;border-radius:10px;display:none;z-index:30;';
-    document.getElementById('game-root').appendChild(el);
-    this.overlay = el;
+  function startRace() {
+    const circuit = pick(rng, RACE_CIRCUITS);
+    race = { circuit, idx: 0, t: 0 };
+    G.hud.announce(`${circuit.name} — beat ${circuit.par}s for $${TUNE.raceReward.toLocaleString()}`, 3000);
+    G.hud.dialogue('Ivy', `${circuit.name}. ${circuit.par} seconds. Do not embarrass me.`);
+  }
+  function startFare() {
+    // A passenger waits at a nearby sidewalk; drive them across town.
+    const p = G.player.p;
+    const a = pick(rng, AVENUES);
+    const px = a + 7, pz = p.z + (rng() < 0.5 ? -60 : 60);
+    const dx = pick(rng, AVENUES) + 7, dz = pick(rng, [-240, -144, -48, 48, 144, 240]);
+    fare = { stage: 'pickup', px, pz, dx, dz };
+    G.hud.announce('Taxi fare: pick up the passenger', 2600);
   }
 
-  // What interactable is the player near? Checks garage, gun shop, safehouses.
-  nearby(player, city) {
-    const spots = [
-      { type: 'garage', x: city.landmarks.garage.x, z: city.landmarks.garage.z, r: 14, label: "Sol's Garage — upgrades (E)" },
-      { type: 'gunshop', x: city.landmarks.gunshop.x, z: city.landmarks.gunshop.z, r: 12, label: "Ivy's Arms — guns & ammo (E)" },
-    ];
-    for (const s of city.landmarks.safehouses) {
-      spots.push({ type: 'safehouse', x: s.x, z: s.z, r: 12, label: `${s.label} — save & rest (E)` });
-    }
-    for (const s of spots) {
-      if (dist(player.x, player.z, s.x, s.z) < s.r) return s;
-    }
-    return null;
-  }
-
-  openMenu(type, ctx) {
-    this.open = type;
-    const o = this.overlay;
-    o.style.display = 'block';
-    if (type === 'garage') this._renderGarage(ctx);
-    else if (type === 'gunshop') this._renderGunshop(ctx);
-    else if (type === 'safehouse') this._renderSafehouse(ctx);
-  }
-
-  close() {
-    this.open = null;
-    this.overlay.style.display = 'none';
-  }
-
-  isOpen() {
-    return this.open !== null;
-  }
-
-  // Auto-close if the player walks away from the spot.
-  closeIfFar(player, city) {
-    if (!this.open) return;
-    const spot = this.nearby(player, city);
-    if (!spot || spot.type !== this.open) this.close();
-  }
-
-  _row(label, price, canAfford, onBuy, owned) {
-    const b = document.createElement('button');
-    b.textContent = owned ? `${label} — OWNED` : `${label} — $${price}`;
-    b.disabled = owned || !canAfford;
-    b.style.cssText = 'display:block;width:100%;margin:6px 0;padding:10px;background:#223;color:#fff;border:1px solid #557;border-radius:6px;cursor:pointer;font-size:15px;';
-    if (!b.disabled) b.onclick = onBuy;
-    return b;
-  }
-
-  _renderGarage(ctx) {
-    const o = this.overlay;
-    o.innerHTML = `<h2 style="margin:0 0 4px">Sol's Garage</h2><p style="margin:0 0 10px;color:#aaa">Cash: $${ctx.cash} · Upgrades apply to your owned cars.</p>`;
-    for (const key of ['engine', 'armour', 'brakes']) {
-      const up = UPGRADES[key];
-      const lvl = ctx.upgrades[key];
-      const next = lvl + 1;
-      const owned = next >= up.levels.length;
-      const price = owned ? 0 : up.levels[next];
-      o.appendChild(this._row(`${up.name} Lv${next}`, price, ctx.cash >= price, () => {
-        ctx.onSpend(price);
-        ctx.upgrades[key] = next;
-        for (const v of ctx.vehicles) if (v.owned) { v.upgrades[key] = next; v.topSpeed = v.def.speed * (1 + [0, 0.12, 0.25][ctx.upgrades.engine]); v.brakePower = v.def.brake * (1 + [0, 0.2, 0.45][ctx.upgrades.brakes]); }
-        ctx.onMessage(`${up.name} upgraded to Lv${next}.`);
-        this._renderGarage(ctx);
-      }, owned));
-    }
-    this._closeRow(o, 'Close (Esc)');
-  }
-
-  _renderGunshop(ctx) {
-    const o = this.overlay;
-    o.innerHTML = `<h2 style="margin:0 0 4px">Ivy's Arms</h2><p style="margin:0 0 10px;color:#aaa">Cash: $${ctx.cash} · Press 1-4 to switch weapons, R to reload.</p>`;
-    for (const key of ['smg', 'shotgun', 'rifle']) {
-      const w = WEAPONS[key];
-      const owned = ctx.combat.owned[key];
-      o.appendChild(this._row(`${w.name} (${w.damage} dmg)`, w.price, ctx.cash >= w.price, () => {
-        ctx.onSpend(w.price);
-        ctx.combat.giveWeapon(key, w.mag * 2);
-        ctx.onMessage(`Bought the ${w.name}.`);
-        this._renderGunshop(ctx);
-      }, owned));
-      if (owned) {
-        o.appendChild(this._row(`${w.name} ammo ×60`, w.ammoPrice, ctx.cash >= w.ammoPrice, () => {
-          ctx.onSpend(w.ammoPrice);
-          ctx.combat.ammo[key] += 60;
-          ctx.onMessage(`+60 ${w.name} ammo.`);
-          this._renderGunshop(ctx);
-        }, false));
+  function update(dt, input) {
+    const p = G.player.p;
+    // --- Bay Coins ---------------------------------------------------------
+    for (const c of coins) {
+      if (c.taken) continue;
+      dummy.position.set(c.x, 1.1 + Math.sin(G.time * 2 + c.bob) * 0.25, c.z);
+      dummy.rotation.set(0, G.time * 1.5 + c.bob, 0);
+      dummy.scale.set(1, 1, 1);
+      dummy.updateMatrix();
+      coinMesh.setMatrixAt(c.slot, dummy.matrix);
+      if (Math.hypot(p.x - c.x, p.z - c.z) < 2.2) {
+        c.taken = true;
+        coinMesh.setMatrixAt(c.slot, hide);
+        G.player.addCash(TUNE.coinValue);
+        G.player.p.coins++;
+        G.audio.cash();
+        G.hud.announce(`Bay Coin +$${TUNE.coinValue} (${G.player.p.coins}/20)`, 1600);
       }
     }
-    this._closeRow(o, 'Close (Esc)');
+    coinMesh.instanceMatrix.needsUpdate = true;
+
+    // --- Street race (T in a car) / taxi fare (T on foot) ------------------
+    if (input.takePressed('KeyT')) {
+      if (!p.onFoot && !race) startRace();
+      else if (p.onFoot && !fare) startFare();
+    }
+    if (race) {
+      race.t += dt;
+      const pt = race.circuit.pts[race.idx];
+      const d = Math.hypot(p.x - pt[0], p.z - pt[1]);
+      G.hud.setObjective(`${race.circuit.name} — gate ${race.idx + 1}/${race.circuit.pts.length} (${Math.ceil(race.circuit.par - race.t)}s)`, d, { x: pt[0], z: pt[1], r: 9 });
+      dummy.position.set(pt[0], 5, pt[1]);
+      dummy.rotation.set(0, G.time * 2, 0);
+      dummy.scale.set(1, 1, 1);
+      dummy.updateMatrix();
+      gateMesh.setMatrixAt(0, dummy.matrix);
+      gateMesh.instanceMatrix.needsUpdate = true;
+      if (d < 9) {
+        G.audio.pickup();
+        race.idx++;
+        if (race.idx >= race.circuit.pts.length) {
+          const won = race.t <= race.circuit.par;
+          if (won) {
+            G.player.addCash(TUNE.raceReward);
+            G.player.addRespect(TUNE.raceRespect);
+            G.hud.announce(`${race.circuit.name} won in ${race.t.toFixed(1)}s — $${TUNE.raceReward.toLocaleString()}`, 3200);
+          } else G.hud.announce(`${race.circuit.name}: ${race.t.toFixed(1)}s — par was ${race.circuit.par}s`, 2800);
+          race = null;
+          gateMesh.setMatrixAt(0, hide);
+          gateMesh.instanceMatrix.needsUpdate = true;
+        }
+      } else if (race.t > race.circuit.par + 30) {
+        G.hud.announce('Race abandoned', 2000);
+        race = null;
+        gateMesh.setMatrixAt(0, hide);
+        gateMesh.instanceMatrix.needsUpdate = true;
+      }
+    }
+    if (fare) {
+      if (fare.stage === 'pickup') {
+        const d = Math.hypot(p.x - fare.px, p.z - fare.pz);
+        G.hud.setObjective('Taxi: pick up the passenger', d, { x: fare.px, z: fare.pz, r: 8 });
+        if (d < 8 && !p.onFoot) {
+          fare.stage = 'drop';
+          G.hud.announce('Passenger aboard — drive them over', 2200);
+        }
+      } else {
+        const d = Math.hypot(p.x - fare.dx, p.z - fare.dz);
+        G.hud.setObjective('Taxi: drop off the passenger', d, { x: fare.dx, z: fare.dz, r: 8 });
+        if (d < 8) {
+          G.player.addCash(TUNE.taxiReward);
+          G.player.addRespect(TUNE.taxiRespect);
+          G.hud.announce(`Fare complete +$${TUNE.taxiReward}`, 2600);
+          fare = null;
+        }
+      }
+    }
+
+    // --- Shops and safehouses (E on foot, no car in reach) ------------------
+    if (p.onFoot && !G.vehicles.nearestCar(p.x, p.z, 4.6)) {
+      // Garage: engine upgrades. The prompt sits on the street west of
+      // the garage (the building's wall is 10 m out; the prompt must be
+      // reachable on foot).
+      if (near(48, -48, 9)) {
+        const lvl = p.garageLevel;
+        if (lvl < 3) {
+          const cost = TUNE.garageCost[lvl + 1] || 0;
+          G.hud.prompt(`E — Engine upgrade tier ${lvl + 1} ($${cost.toLocaleString()})`);
+          if (input.takePressed('KeyE') && p.cash >= cost) {
+            p.cash -= cost; p.garageLevel++;
+            if (p.car) p.car.upgraded = 1 + p.garageLevel * 0.09;
+            G.audio.cash();
+            G.hud.announce(`Engine tier ${p.garageLevel} installed`, 2200);
+          }
+        } else G.hud.prompt("Tessa's Garage — engine maxed");
+      }
+      // Gun shop: buy the next weapon. Prompt on the street west of it.
+      else if (near(-48, 48, 9)) {
+        const order = ['smg', 'shotgun', 'rifle'];
+        const next = order.find((w) => !p.weapons[w] || !p.weapons[w].owned);
+        if (next) {
+          const cost = TUNE.gunCost[next];
+          G.hud.prompt(`E — Buy ${next.toUpperCase()} ($${cost.toLocaleString()})`);
+          if (input.takePressed('KeyE') && p.cash >= cost) {
+            p.cash -= cost;
+            G.player.giveWeapon(next);
+            G.audio.cash();
+            G.hud.announce(`${next.toUpperCase()} bought`, 2200);
+          }
+        } else G.hud.prompt('Gun shop — fully stocked');
+      }
+      // Safehouses: save + heal. The loft's prompt is on the street west
+      // of it (its wall is 12 m out).
+      else if (near(-72, -72, 8) || near(280, 160, 8) || near(72, 96, 8)) {
+        G.hud.prompt('E — Save at the safehouse');
+        if (input.takePressed('KeyE')) {
+          G.player.heal(100);
+          G.save.write();
+          G.audio.cash();
+          G.hud.announce('Game saved', 1800);
+        }
+      } else shopMsg = '';
+    }
   }
 
-  _renderSafehouse(ctx) {
-    const o = this.overlay;
-    o.innerHTML = `<h2 style="margin:0 0 4px">Safehouse</h2><p style="margin:0 0 10px;color:#aaa">Catch your breath. The heat dies down here.</p>`;
-    const saveBtn = document.createElement('button');
-    saveBtn.textContent = 'Save game';
-    saveBtn.style.cssText = 'display:block;width:100%;margin:6px 0;padding:10px;background:#253;color:#fff;border:1px solid #575;border-radius:6px;cursor:pointer;font-size:15px;';
-    saveBtn.onclick = () => { ctx.onSave(); ctx.onMessage('Game saved.'); this.close(); };
-    o.appendChild(saveBtn);
-    const restBtn = document.createElement('button');
-    restBtn.textContent = 'Rest (heal + lose wanted)';
-    restBtn.style.cssText = 'display:block;width:100%;margin:6px 0;padding:10px;background:#223;color:#fff;border:1px solid #557;border-radius:6px;cursor:pointer;font-size:15px;';
-    restBtn.onclick = () => {
-      ctx.player.heal(100);
-      ctx.police.clear();
-      ctx.onSave();
-      ctx.onMessage('Rested. Health full, heat gone, game saved.');
-      this.close();
-    };
-    o.appendChild(restBtn);
-    this._closeRow(o, 'Close (Esc)');
-  }
-
-  _closeRow(o, label) {
-    const b = document.createElement('button');
-    b.textContent = label;
-    b.style.cssText = 'display:block;width:100%;margin:12px 0 0;padding:10px;background:#444;color:#fff;border:1px solid #777;border-radius:6px;cursor:pointer;font-size:15px;';
-    b.onclick = () => this.close();
-    o.appendChild(b);
-  }
+  return { update, get race() { return race; }, get fare() { return fare; }, coins };
 }

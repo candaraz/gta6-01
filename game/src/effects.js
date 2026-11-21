@@ -1,118 +1,98 @@
-// effects.js — particles, muzzle flashes, explosions and screen shake.
-// One THREE.Points pool reused for every burst, so effects never allocate
-// mid-frame. Explosions also flash a light and shake the camera.
+// effects.js — Solmar Bay v3: particles (dust, smoke, sparks, muzzle flash,
+// explosions) plus screen shake. One job: the visible chaos of a chase.
+// Two THREE.Points pools: one additive (sparks / flash / fire), one soft
+// (smoke / dust) that fades toward the fog colour.
+
 import * as THREE from 'three';
 
-export class Effects {
-  constructor(scene) {
-    this.scene = scene;
-    this.max = 900;
-    this.pos = new Float32Array(this.max * 3);
-    this.col = new Float32Array(this.max * 3);
-    this.vel = new Float32Array(this.max * 3);
-    this.life = new Float32Array(this.max);
-    this.head = 0;
+const MAX = 700;
+
+export function createEffects(scene) {
+  function makePool(additive) {
     const geo = new THREE.BufferGeometry();
-    geo.setAttribute('position', new THREE.BufferAttribute(this.pos, 3));
-    geo.setAttribute('color', new THREE.BufferAttribute(this.col, 3));
-    const mat = new THREE.PointsMaterial({ size: 0.9, vertexColors: true, transparent: true, opacity: 0.95, depthWrite: false });
-    this.points = new THREE.Points(geo, mat);
-    this.points.frustumCulled = false;
-    scene.add(this.points);
-    for (let i = 0; i < this.max; i++) this.pos[i * 3 + 1] = -100;
+    const pos = new Float32Array(MAX * 3);
+    const col = new Float32Array(MAX * 3);
+    geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
+    const mat = new THREE.PointsMaterial({
+      size: 0.85, vertexColors: true, transparent: true, depthWrite: false,
+      blending: additive ? THREE.AdditiveBlending : THREE.NormalBlending,
+      sizeAttenuation: true,
+    });
+    const points = new THREE.Points(geo, mat);
+    points.frustumCulled = false;
+    scene.add(points);
+    return {
+      pos, col, vel: new Float32Array(MAX * 3), life: new Float32Array(MAX),
+      maxLife: new Float32Array(MAX), base: new Float32Array(MAX * 3),
+      head: 0, geo,
+    };
+  }
+  const sparks = makePool(true);
+  const smoke = makePool(false);
+  let trauma = 0;
 
-    this.flash = new THREE.PointLight(0xffcc66, 0, 30);
-    scene.add(this.flash);
-    this.shake = 0;
-    this.smoke = [];
+  function spawn(pool, x, y, z, vx, vy, vz, life, r, g, b) {
+    const i = pool.head; pool.head = (pool.head + 1) % MAX;
+    pool.pos[i * 3] = x; pool.pos[i * 3 + 1] = y; pool.pos[i * 3 + 2] = z;
+    pool.vel[i * 3] = vx; pool.vel[i * 3 + 1] = vy; pool.vel[i * 3 + 2] = vz;
+    pool.life[i] = life; pool.maxLife[i] = life;
+    pool.base[i * 3] = r; pool.base[i * 3 + 1] = g; pool.base[i * 3 + 2] = b;
+    pool.col[i * 3] = r; pool.col[i * 3 + 1] = g; pool.col[i * 3 + 2] = b;
   }
 
-  burst(x, y, z, n, colour, speed, up, life) {
+  function burst(pool, p, n, spread, up, life, rgb) {
     for (let k = 0; k < n; k++) {
-      const i = this.head;
-      this.head = (this.head + 1) % this.max;
-      this.pos[i * 3] = x; this.pos[i * 3 + 1] = y; this.pos[i * 3 + 2] = z;
       const a = Math.random() * Math.PI * 2;
-      const s = speed * (0.4 + Math.random() * 0.8);
-      this.vel[i * 3] = Math.cos(a) * s;
-      this.vel[i * 3 + 1] = up + Math.random() * speed * 0.5;
-      this.vel[i * 3 + 2] = Math.sin(a) * s;
-      const c = new THREE.Color(colour);
-      const shade = 0.7 + Math.random() * 0.5;
-      this.col[i * 3] = Math.min(1, c.r * shade);
-      this.col[i * 3 + 1] = Math.min(1, c.g * shade);
-      this.col[i * 3 + 2] = Math.min(1, c.b * shade);
-      this.life[i] = life * (0.5 + Math.random() * 0.8);
+      const s = spread * (0.4 + Math.random() * 0.8);
+      spawn(pool, p.x, p.y, p.z,
+        Math.cos(a) * s, up * (0.3 + Math.random() * 0.9), Math.sin(a) * s,
+        life * (0.6 + Math.random() * 0.7), rgb[0], rgb[1], rgb[2]);
     }
-    this.points.geometry.attributes.position.needsUpdate = true;
-    this.points.geometry.attributes.color.needsUpdate = true;
   }
 
-  muzzle(x, y, z) {
-    this.burst(x, y, z, 6, 0xffd24a, 6, 1, 0.12);
-    this.flash.position.set(x, y, z);
-    this.flash.intensity = 60;
-  }
-
-  explosion(x, y, z, big) {
-    const n = big ? 90 : 45;
-    this.burst(x, y + 0.5, z, n, 0xff7a1a, big ? 16 : 11, 7, big ? 1.1 : 0.8);
-    this.burst(x, y + 0.5, z, n / 2, 0x333333, 5, 9, 1.8);
-    this.burst(x, y + 0.5, z, 20, 0xffe08a, 9, 5, 0.4);
-    this.flash.position.set(x, y + 2, z);
-    this.flash.intensity = big ? 400 : 200;
-    this.shake = Math.max(this.shake, big ? 1.0 : 0.55);
-  }
-
-  sparks(x, y, z) {
-    this.burst(x, y, z, 14, 0xffc860, 8, 3, 0.5);
-  }
-
-  blood(x, y, z) {
-    this.burst(x, y, z, 10, 0xa01818, 4, 2, 0.5);
-  }
-
-  // A rising ring of sparks for a collected coin or checkpoint.
-  ring(x, y, z, colour) {
-    for (let k = 0; k < 18; k++) {
-      const i = this.head;
-      this.head = (this.head + 1) % this.max;
-      const a = (k / 18) * Math.PI * 2;
-      this.pos[i * 3] = x; this.pos[i * 3 + 1] = y; this.pos[i * 3 + 2] = z;
-      this.vel[i * 3] = Math.cos(a) * 7;
-      this.vel[i * 3 + 1] = 4;
-      this.vel[i * 3 + 2] = Math.sin(a) * 7;
-      const c = new THREE.Color(colour);
-      this.col[i * 3] = c.r; this.col[i * 3 + 1] = c.g; this.col[i * 3 + 2] = c.b;
-      this.life[i] = 0.6;
+  function updatePool(pool, dt, gravity, drag) {
+    for (let i = 0; i < MAX; i++) {
+      if (pool.life[i] <= 0) { pool.col[i * 3] = 0; pool.col[i * 3 + 1] = 0; pool.col[i * 3 + 2] = 0; continue; }
+      pool.life[i] -= dt;
+      pool.vel[i * 3 + 1] -= gravity * dt;
+      pool.vel[i * 3] *= drag; pool.vel[i * 3 + 1] *= drag; pool.vel[i * 3 + 2] *= drag;
+      pool.pos[i * 3] += pool.vel[i * 3] * dt;
+      pool.pos[i * 3 + 1] += pool.vel[i * 3 + 1] * dt;
+      pool.pos[i * 3 + 2] += pool.vel[i * 3 + 2] * dt;
+      const f = Math.max(0, pool.life[i] / pool.maxLife[i]);
+      pool.col[i * 3] = pool.base[i * 3] * f;
+      pool.col[i * 3 + 1] = pool.base[i * 3 + 1] * f;
+      pool.col[i * 3 + 2] = pool.base[i * 3 + 2] * f;
     }
-    this.points.geometry.attributes.position.needsUpdate = true;
-    this.points.geometry.attributes.color.needsUpdate = true;
+    pool.geo.attributes.position.needsUpdate = true;
+    pool.geo.attributes.color.needsUpdate = true;
   }
 
-  addShake(amount) {
-    this.shake = Math.max(this.shake, amount);
-  }
-
-  shakeOffset() {
-    if (this.shake <= 0.001) return { x: 0, y: 0 };
-    const s = this.shake;
-    return { x: (Math.random() - 0.5) * s * 0.5, y: (Math.random() - 0.5) * s * 0.5 };
-  }
-
-  update(dt) {
-    for (let i = 0; i < this.max; i++) {
-      if (this.life[i] <= 0) continue;
-      this.life[i] -= dt;
-      if (this.life[i] <= 0) { this.pos[i * 3 + 1] = -100; continue; }
-      this.pos[i * 3] += this.vel[i * 3] * dt;
-      this.pos[i * 3 + 1] += this.vel[i * 3 + 1] * dt;
-      this.pos[i * 3 + 2] += this.vel[i * 3 + 2] * dt;
-      this.vel[i * 3 + 1] -= 12 * dt;
-      if (this.pos[i * 3 + 1] < 0.05) { this.pos[i * 3 + 1] = 0.05; this.vel[i * 3 + 1] *= -0.3; }
-    }
-    this.points.geometry.attributes.position.needsUpdate = true;
-    this.flash.intensity = Math.max(0, this.flash.intensity - dt * 900);
-    this.shake = Math.max(0, this.shake - dt * 1.8);
-  }
+  return {
+    dust(p) { burst(smoke, p, 7, 2.2, 1.2, 0.9, [0.62, 0.58, 0.52]); },
+    tyreSmoke(p) { burst(smoke, p, 4, 1.4, 1.6, 0.7, [0.55, 0.55, 0.58]); },
+    sparks(p) { burst(sparks, p, 14, 6, 3.5, 0.5, [1.0, 0.75, 0.25]); },
+    muzzle(p, dir) {
+      for (let k = 0; k < 5; k++) {
+        spawn(sparks, p.x, p.y, p.z,
+          dir.x * 14 + (Math.random() - 0.5) * 4, dir.y * 14 + (Math.random() - 0.5) * 4, dir.z * 14 + (Math.random() - 0.5) * 4,
+          0.12, 1.0, 0.85, 0.4);
+      }
+    },
+    explosion(p) {
+      burst(sparks, p, 26, 9, 6, 0.8, [1.0, 0.55, 0.15]);
+      burst(smoke, p, 18, 4, 5, 1.6, [0.32, 0.3, 0.3]);
+      trauma = Math.min(1, trauma + 0.55);
+    },
+    splash(p) { burst(smoke, p, 10, 3, 4, 0.7, [0.7, 0.85, 0.9]); },
+    blood(p) { burst(smoke, p, 6, 2, 1.5, 0.5, [0.55, 0.1, 0.1]); },
+    addShake(a) { trauma = Math.min(1, trauma + a); },
+    get shake() { return trauma * trauma; },
+    update(dt) {
+      trauma = Math.max(0, trauma - dt * 1.6);
+      updatePool(sparks, dt, 9, 0.96);
+      updatePool(smoke, dt, -1.5, 0.94);
+    },
+  };
 }

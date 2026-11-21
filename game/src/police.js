@@ -1,198 +1,194 @@
-// police.js — the 5-star wanted system: patrol cars that chase and ram,
-// roadblocks from 3 stars, a helicopter from 4, busts on foot, and wanted
-// decay when the player stays hidden and quiet.
+// police.js — Solmar Bay v3: the wanted level and the Solmar PD.
+// One job: stars, pursuit, roadblocks, the helicopter, busts, and decay.
+//
+// Cops steer along the road grid (Manhattan) toward the player, never
+// straight through buildings — the v2 fix — and reverse out when pinned.
+
 import * as THREE from 'three';
-import { WANTED } from './config.js';
-import { spawnPoliceCar } from './vehicles.js';
-import { clamp, dist, angleDiff } from './random.js';
+import { TUNE } from './config.js';
+import { makeRng, pick } from './random.js';
 
-export class Police {
-  constructor(scene, city, effects, audio) {
-    this.scene = scene;
-    this.city = city;
-    this.effects = effects;
-    this.audio = audio;
-    this.stars = 0;
-    this.cops = [];
-    this.roadblocks = [];
-    this.heli = null;
-    this.quietTimer = 0;
-    this.decayTimer = 0;
-    this.spawnTimer = 0;
-    this.blockTimer = 0;
-    this.bustTimer = 0;
-    this.lastCrimeAt = -100;
-    this.time = 0;
+export function createPolice(G) {
+  const scene = G.scene;
+  const rng = makeRng(31337);
+  let stars = 0;
+  let hiddenTimer = 0;
+  let roadblockTimer = 0;
+  const cops = []; // {car, stuckT, reverseT}
+  let heli = null; // {group, rotor, angle}
+
+  function addStars(n) {
+    stars = Math.min(5, stars + n);
+    if (stars > 0) hiddenTimer = 0;
+    G.hud.setStars(stars);
+  }
+  function setStars(n) {
+    stars = Math.max(0, Math.min(5, n));
+    G.hud.setStars(stars);
+  }
+  function nearestCopDist(x, z) {
+    let bd = 1e9;
+    for (const c of cops) bd = Math.min(bd, Math.hypot(c.car.x - x, c.car.z - z));
+    return bd;
   }
 
-  addStars(n, reason) {
-    const before = this.stars;
-    this.stars = clamp(this.stars + n, 0, WANTED.maxStars);
-    if (this.stars > before) {
-      this.quietTimer = 0;
-      this.lastCrimeAt = this.time;
+  function spawnCopNear(x, z, dist) {
+    // Spawn on a road near the player, at the requested distance.
+    for (let tries = 0; tries < 12; tries++) {
+      const a = rng() * Math.PI * 2;
+      const cx = x + Math.cos(a) * dist, cz = z + Math.sin(a) * dist;
+      const rp = G.city.nearestRoadPoint(cx, cz);
+      if (!rp) continue;
+      const car = G.vehicles.spawnCar('interceptor', rp.x, rp.z, 0, 'police');
+      if (!car) return null;
+      car.heading = rp.along === 'x' ? Math.PI / 2 : 0;
+      const cop = { car, stuckT: 0, reverseT: 0, lastX: rp.x, lastZ: rp.z, staged: false, cruiseSpeed: 0 };
+      cops.push(cop);
+      return cop;
     }
-    return this.stars;
+    return null;
   }
 
-  setStars(n) {
-    this.stars = clamp(n, 0, WANTED.maxStars);
-    this.quietTimer = 0;
-    this.lastCrimeAt = this.time;
-  }
-
-  clear() {
-    this.stars = 0;
-    this.quietTimer = 0;
-    this.decayTimer = 0;
-    this.bustTimer = 0;
-    for (const c of this.cops) c.remove(this.scene);
-    this.cops = [];
-    this._clearRoadblocks();
-    this._removeHeli();
-  }
-
-  _clearRoadblocks() {
-    for (const v of this.roadblocks) v.remove(this.scene);
-    this.roadblocks = [];
-  }
-
-  _removeHeli() {
-    if (this.heli) { this.scene.remove(this.heli.mesh); this.heli = null; }
-  }
-
-  _makeHeli() {
-    const group = new THREE.Group();
-    const body = new THREE.Mesh(new THREE.BoxGeometry(3, 1.4, 5), new THREE.MeshLambertMaterial({ color: 0x1a2a4a }));
-    group.add(body);
-    const rotor = new THREE.Mesh(new THREE.BoxGeometry(7, 0.12, 0.5), new THREE.MeshLambertMaterial({ color: 0x222222 }));
-    rotor.position.y = 1;
-    rotor.name = 'rotor';
-    group.add(rotor);
-    const light = new THREE.SpotLight(0xffffff, 80, 60, 0.4, 0.5);
-    light.position.set(0, -1, 0);
-    group.add(light);
-    group.add(light.target);
-    light.target.position.set(0, -20, 0);
-    this.scene.add(group);
-    this.heli = { mesh: group, rotor, angle: 0 };
-  }
-
-  _spawnCop(px, pz, playerHeading) {
-    // Appear on a road 60-90 m away, roughly behind the player's view.
-    const a = Math.random() * Math.PI * 2;
-    const d = 60 + Math.random() * 30;
-    let x = px + Math.cos(a) * d;
-    let z = pz + Math.sin(a) * d;
-    x = clamp(x, -300, 300);
-    z = clamp(z, -300, 200);
-    const v = spawnPoliceCar(this.scene, x, z, Math.atan2(px - x, pz - z));
-    this.cops.push(v);
-    if (this.onSpawn) this.onSpawn(v);
-    return v;
-  }
-
-  _roadblockAhead(px, pz, heading) {
-    const fx = Math.sin(heading), fz = Math.cos(heading);
-    const cx = px + fx * 55, cz = pz + fz * 55;
-    const rx = Math.cos(heading), rz = -Math.sin(heading);
-    for (const off of [-6, 0, 6]) {
-      const v = spawnPoliceCar(this.scene, cx + rx * off, cz + rz * off, heading + Math.PI / 2);
-      v.speed = 0;
-      v.driver = 'roadblock';
-      this.roadblocks.push(v);
-      if (this.onSpawn) this.onSpawn(v);
+  function spawnRoadblock() {
+    const p = G.player.p;
+    // Two cruisers parked across the road ahead of the player.
+    const fx = Math.sin(p.heading), fz = Math.cos(p.heading);
+    const bx = p.x + fx * 55, bz = p.z + fz * 55;
+    const rp = G.city.nearestRoadPoint(bx, bz);
+    if (!rp) return;
+    for (const side of [-1, 1]) {
+      const car = G.vehicles.spawnCar('interceptor', rp.x + (rp.along === 'x' ? side * 2.4 : 0), rp.z + (rp.along === 'x' ? 0 : side * 2.4), rp.along === 'x' ? Math.PI / 2 : 0, 'police');
+      if (car) { car.roadblock = true; cops.push({ car, stuckT: 0, reverseT: 0, lastX: car.x, lastZ: car.z }); }
     }
   }
 
-  update(dt, player, vehicles, onBusted, onCopRam) {
-    this.time += dt;
-    const px = player.x, pz = player.z;
-    const inCar = !!player.inVehicle;
-    // How many cops should be on scene.
-    const want = WANTED.copsPerStar[this.stars];
-    this.spawnTimer -= dt;
-    if (this.cops.length < want && this.spawnTimer <= 0 && this.stars > 0) {
-      this._spawnCop(px, pz, player.heading);
-      this.spawnTimer = 2.5;
-    }
-    // Helicopter from 4 stars.
-    if (this.stars >= WANTED.heliFrom && !this.heli) this._makeHeli();
-    if (this.stars < WANTED.heliFrom && this.heli) this._removeHeli();
-    if (this.heli) {
-      const h = this.heli;
-      h.angle += dt * 0.5;
-      const hx = px + Math.cos(h.angle) * 18;
-      const hz = pz + Math.sin(h.angle) * 18;
-      h.mesh.position.set(hx, 42, hz);
-      h.mesh.lookAt(px, 0, pz);
-      h.rotor.rotation.y += dt * 22;
-    }
-    // Roadblocks from 3 stars, refreshed ahead of the player.
-    this.blockTimer -= dt;
-    if (this.stars >= WANTED.roadblockFrom && this.blockTimer <= 0) {
-      this._clearRoadblocks();
-      this._roadblockAhead(px, pz, inCar ? player.inVehicle.heading : player.heading);
-      this.blockTimer = 14;
-    }
-    if (this.stars < WANTED.roadblockFrom && this.roadblocks.length) this._clearRoadblocks();
+  function buildHeli() {
+    const g = new THREE.Group();
+    const body = new THREE.Mesh(new THREE.BoxGeometry(3.4, 1.6, 5.2), new THREE.MeshLambertMaterial({ color: 0x1a1d24 }));
+    g.add(body);
+    const tail = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.7, 4.4), new THREE.MeshLambertMaterial({ color: 0x1a1d24 }));
+    tail.position.set(0, 0.2, -4.2); g.add(tail);
+    const rotor = new THREE.Mesh(new THREE.BoxGeometry(11, 0.12, 0.7), new THREE.MeshLambertMaterial({ color: 0x3a3a3e }));
+    rotor.position.y = 1.1; g.add(rotor);
+    const skid = new THREE.Mesh(new THREE.BoxGeometry(2.6, 0.2, 3.4), new THREE.MeshLambertMaterial({ color: 0x3a3a3e }));
+    skid.position.y = -1.1; g.add(skid);
+    // Searchlight cone pointing down.
+    const coneGeo = new THREE.ConeGeometry(7, 42, 12, 1, true);
+    coneGeo.translate(0, -21, 0);
+    const cone = new THREE.Mesh(coneGeo, new THREE.MeshBasicMaterial({ color: 0xfff2b0, transparent: true, opacity: 0.16, side: THREE.DoubleSide, depthWrite: false }));
+    cone.position.y = -1; g.add(cone);
+    g.visible = false;
+    scene.add(g);
+    return { group: g, rotor, angle: 0 };
+  }
 
-    // Chase AI: steer toward the player along the road grid (Manhattan
-    // steering — a straight-line chase rams every building between the
-    // cop and the player). The cop heads along the axis with the bigger
-    // gap, so it stays on roads and turns at intersections.
-    for (const c of this.cops) {
-      if (c.dead) continue;
-      const d = dist(c.x, c.z, px, pz);
-      const dx = px - c.x, dz = pz - c.z;
-      const wantHeading = Math.abs(dx) > Math.abs(dz)
-        ? (dx > 0 ? Math.PI / 2 : -Math.PI / 2)
-        : (dz > 0 ? 0 : Math.PI);
-      const steer = clamp(angleDiff(c.heading, wantHeading) * 1.6, -1, 1);
-      const crashed = c.drive(dt, steer, 1, this.city, vehicles);
-      if (crashed && d < 12 && onCopRam) onCopRam(c);
-      // A cop that touches the player's car damages it; on foot it busts.
-      if (d < c.radius + 1.2) {
-        if (!inCar) {
-          this.bustTimer += dt;
-          if (this.bustTimer >= WANTED.bustSeconds && onBusted) onBusted();
-        } else if (player.inVehicle) {
-          player.inVehicle.damage(6 * dt * 10);
-        }
+  function angleDiff(a, b) {
+    let d = a - b;
+    while (d > Math.PI) d -= Math.PI * 2;
+    while (d < -Math.PI) d += Math.PI * 2;
+    return d;
+  }
+
+  function update(dt) {
+    const p = G.player.p;
+    // Wanted decay: hidden (no cop within 55 m) for 9 s loses a star.
+    if (stars > 0) {
+      const near = nearestCopDist(p.x, p.z);
+      if (near > 55 && !heli) {
+        hiddenTimer += dt;
+        if (hiddenTimer > TUNE.wantedDecayHidden) { setStars(stars - 1); hiddenTimer = 0; }
+      } else hiddenTimer = 0;
+    }
+    // Keep the right number of pursuit cops on the road.
+    const want = stars === 0 ? 0 : Math.min(6, stars + 1);
+    let active = 0;
+    for (const c of [...cops]) {
+      if (!c.car.alive) { cops.splice(cops.indexOf(c), 1); continue; }
+      active++;
+    }
+    while (active < want) {
+      if (!spawnCopNear(p.x, p.z, 55 + rng() * 40)) break;
+      active++;
+    }
+    // Roadblocks at 3+ stars, one every ~25 s.
+    if (stars >= 3) {
+      roadblockTimer -= dt;
+      if (roadblockTimer <= 0) { spawnRoadblock(); roadblockTimer = 25; }
+    }
+    // Helicopter at 4+ stars.
+    if (stars >= 4 && !heli) heli = buildHeli();
+    if (heli) {
+      heli.group.visible = stars >= 4;
+      if (stars >= 4) {
+        heli.angle += dt * 0.35;
+        heli.group.position.set(p.x + Math.cos(heli.angle) * 34, 42, p.z + Math.sin(heli.angle) * 34);
+        heli.group.rotation.y = -Math.atan2(p.x - heli.group.position.x, p.z - heli.group.position.z);
+        heli.rotor.rotation.y += dt * 22;
       }
-      // Despawn far-away cops once the heat is off.
-      if (d > 260 && this.stars === 0) { c.remove(this.scene); }
     }
-    this.cops = this.cops.filter((c) => !c.dead);
-    // Wanted decay: quiet + unseen for a while, then one star at a time.
-    const nearest = this.nearestCopDistance(px, pz);
-    const seen = nearest < 45 || this.stars >= 4; // helicopter keeps you spotted
-    if (this.stars > 0 && !seen && this.time - this.lastCrimeAt > WANTED.decayQuietSeconds) {
-      this.quietTimer += dt;
-      this.decayTimer += dt;
-      if (this.decayTimer >= WANTED.decayInterval) {
-        this.decayTimer = 0;
-        this.stars = Math.max(0, this.stars - 1);
+    // Sirens: on with heat, louder when a cop is close.
+    const near = nearestCopDist(p.x, p.z);
+    G.audio.setSiren(stars > 0, Math.max(0, 1 - near / 110));
+    G.audio.sirenTick(dt);
+
+    // Drive each cop: Manhattan steering toward the player.
+    for (const c of [...cops]) {
+      const car = c.car;
+      if (!car.alive) continue;
+      if (car.roadblock) continue; // roadblock cars hold their post
+      // Staged cops (screenshot poses) just cruise straight alongside at
+      // their set speed — they never ram or bust, so the shot stays composed.
+      if (c.staged) {
+        const thr = car.speed < c.cruiseSpeed ? 1 : 0;
+        G.vehicles.stepCar(car, dt, thr, 0, 0, G.time);
+        continue;
       }
-    } else {
-      this.quietTimer = 0;
-      this.decayTimer = 0;
+      const dx = p.x - car.x, dz = p.z - car.z;
+      const dist = Math.hypot(dx, dz);
+      // Target: first close the x gap along the current road, then the z gap.
+      let tx, tz;
+      if (Math.abs(dx) > 12) { tx = p.x; tz = car.z; }
+      else { tx = car.x; tz = p.z; }
+      const want = Math.atan2(tx - car.x, tz - car.z);
+      let steer = Math.max(-1, Math.min(1, angleDiff(want, car.heading) * 1.8));
+      // Ram when close: aim straight at the player.
+      if (dist < 14) steer = Math.max(-1, Math.min(1, angleDiff(Math.atan2(dx, dz), car.heading) * 1.8));
+      // Stuck detection: barely moving while trying -> reverse out.
+      const moved = Math.hypot(car.x - c.lastX, car.z - c.lastZ);
+      c.lastX = car.x; c.lastZ = car.z;
+      if (c.reverseT > 0) {
+        c.reverseT -= dt;
+        G.vehicles.stepCar(car, dt, -1, -steer, 0, G.time);
+        continue;
+      }
+      if (Math.abs(car.speed) < 1.5 && dist > 10) {
+        c.stuckT += dt;
+        if (c.stuckT > 2) { c.reverseT = 1.1; c.stuckT = 0; continue; }
+      } else c.stuckT = 0;
+      G.vehicles.stepCar(car, dt, 1, steer, 0, G.time);
+      // Ram impact: a hard hit on the player's car shakes and sparks.
+      if (dist < 4.4 && p.car && Math.abs(car.speed) > 8) {
+        G.effects.sparks({ x: p.x, y: 1, z: p.z });
+        G.audio.crash();
+        G.effects.addShake(0.3);
+        car.speed *= 0.5;
+      }
+      // Bust: on foot, a cop right on top of a slow player — but
+      // never mid-vault-crack, in the getaway grace after one, or
+      // in the 4 s grace after stepping out of a vehicle (see
+      // missions.isHoldStage / isHoldGrace, player.isExitGrace).
+      if (p.onFoot && dist < 2.6 && !p.dead && !G.missions.isHoldStage() && !G.missions.isHoldGrace() && !G.player.isExitGrace()) {
+        G.setState('busted');
+      }
     }
-    // Siren while any cop is on scene.
-    this.audio.setSiren(this.cops.length > 0 && this.stars > 0);
+    // Clean up cops when the heat is gone.
+    if (stars === 0) {
+      for (const c of [...cops]) {
+        G.vehicles.despawnCar(c.car);
+        cops.splice(cops.indexOf(c), 1);
+      }
+    }
   }
 
-  nearestCopDistance(px, pz) {
-    let best = Infinity;
-    for (const c of this.cops) {
-      if (c.dead) continue;
-      const d = dist(c.x, c.z, px, pz);
-      if (d < best) best = d;
-    }
-    return best;
-  }
-
-  copCount() {
-    return this.cops.filter((c) => !c.dead).length;
-  }
+  return { update, addStars, setStars, nearestCopDist, spawnCopNear, get stars() { return stars; }, cops };
 }

@@ -1,577 +1,259 @@
-// missions.js — the 10 story missions, the street-race and taxi side
-// activities, and the race engine. Story races keep the mission active;
-// side races and fares PAUSE the mission and restore it afterwards.
-// Hold-to-use stages read the held key, never the edge.
-import * as THREE from 'three';
-import { MISSION_REWARDS, CIRCUITS } from './config.js';
-import { Vehicle, spawnBoat } from './vehicles.js';
-import { dist, clamp, angleDiff } from './random.js';
+// missions.js — Solmar Bay v3: the 10-story campaign.
+// One job: run the story — objectives, waypoints, dialogue, rewards.
+// Each mission is a list of stages; a stage is a goto, an enter (press E),
+// a kill count, a hold (hold F), or a checkpoint race. Completing a
+// mission pays cash + respect and opens the next one.
 
-export const MISSION_DEFS = [
-  {
-    id: 1, name: 'First Wheels', giver: 'Mara',
-    brief: 'Dario needs a van. Lift one and bring it to the drop-off.',
-    stages: [
-      { type: 'goto', x: -140, z: 5, r: 12, text: 'Meet Dario at the garage' },
-      { type: 'enter', cls: 'van', x: -140, z: 5, r: 14, text: 'Steal the Hauler van (E)' },
-      { type: 'drive', x: 140, z: 140, r: 12, text: 'Drive the van to the drop-off' },
-    ],
-  },
-  {
-    id: 2, name: 'The Pickup', giver: 'Dario',
-    brief: 'Grab the package from Ivy and run it to the Beach House.',
-    stages: [
-      { type: 'goto', x: 75, z: -145, r: 12, text: "Go to Ivy's Arms" },
-      { type: 'interact', x: 75, z: -145, r: 8, key: 'e', text: 'Pick up the package (E)' },
-      { type: 'drive', x: 215, z: 145, r: 12, text: 'Deliver the package to the Beach House' },
-    ],
-  },
-  {
-    id: 3, name: 'Bay Run', giver: 'Ivy',
-    brief: 'Win the Harbour Loop. A Comet GT is waiting at the start line.',
-    stages: [
-      { type: 'goto', x: 210, z: 0, r: 12, text: 'Get to the Harbour Loop start' },
-      { type: 'race', circuit: 'harbour', laps: 2, car: 'sports', text: 'Win the Harbour Loop (2 laps)' },
-    ],
-  },
-  {
-    id: 4, name: 'Dockside', giver: 'Sol',
-    brief: 'The Vultures are muscling the docks. Clear all six of them.',
-    stages: [
-      { type: 'goto', x: 240, z: 70, r: 14, text: 'Go to the docks' },
-      { type: 'kill', x: 240, z: 70, count: 6, label: 'Vulture', text: 'Take out the Vultures (0/6)' },
-    ],
-  },
-  {
-    id: 5, name: 'The Getaway', giver: 'Mara',
-    brief: 'The cops are coming. Get to 3 stars, then lose them at the Pier House.',
-    stages: [
-      { type: 'wanted', stars: 3, text: 'Raise your wanted level to 3 stars' },
-      { type: 'escape', x: -215, z: 215, r: 14, text: 'Lose the cops at the Pier House' },
-    ],
-  },
-  {
-    id: 6, name: 'Grand Theft Bay', giver: 'Ivy',
-    brief: 'A Comet GT is parked downtown. Take it and bring it to the garage.',
-    stages: [
-      { type: 'goto', x: 0, z: -70, r: 12, text: 'Go downtown' },
-      { type: 'enter', cls: 'sports', x: 0, z: -70, r: 14, text: 'Steal the Comet GT (E)' },
-      { type: 'drive', x: -140, z: 5, r: 12, text: 'Bring the Comet GT to the garage' },
-    ],
-  },
-  {
-    id: 7, name: 'Payback', giver: 'Dario',
-    brief: 'Ten Vultures, one plaza. Settle it.',
-    stages: [
-      { type: 'goto', x: -70, z: 0, r: 14, text: 'Go to the plaza' },
-      { type: 'kill', x: -70, z: 0, count: 10, label: 'Vulture', text: 'Take out the Vultures (0/10)' },
-    ],
-  },
-  {
-    id: 8, name: 'The Heist', giver: 'Sol',
-    brief: 'Crack the vault downtown, then run — the whole city will be after you.',
-    stages: [
-      { type: 'goto', x: 70, z: -70, r: 12, text: 'Go to the bank' },
-      { type: 'hold', x: 70, z: -70, r: 9, seconds: 8, key: 'f', text: 'Hold F to crack the vault' },
-      { type: 'escape', x: -245, z: -245, r: 14, text: 'Escape to Mara’s Place (4 stars)' },
-    ],
-  },
-  {
-    id: 9, name: 'High Tide', giver: 'Mara',
-    brief: 'A Marlin is waiting at the pier. Win the bay race.',
-    stages: [
-      { type: 'goto', x: 300, z: 90, r: 12, text: 'Go to the pier' },
-      { type: 'boatrace', laps: 1, text: 'Win the bay race (1 lap)' },
-    ],
-  },
-  {
-    id: 10, name: 'King of the Bay', giver: 'Sol',
-    brief: 'Win the Downtown Dash, then finish the Vultures for good.',
-    stages: [
-      { type: 'goto', x: 0, z: -178, r: 16, text: 'Meet Sol by the Solmar Tower' },
-      { type: 'race', circuit: 'downtown', laps: 3, car: 'sports', text: 'Win the Downtown Dash (3 laps)' },
-      { type: 'kill', x: 0, z: -70, count: 12, label: 'Vulture', text: 'Take out the Vultures (0/12)' },
-    ],
-  },
+import * as THREE from 'three';
+import { MISSION_REWARDS } from './config.js';
+
+const CREW = {
+  mara: 'Mara', dario: 'Dario', ivy: 'Ivy', sol: 'Sol', pearl: 'Pearl',
+};
+
+// Mission definitions: [name, speaker, briefing, stages].
+// Stage: {t:'goto', x, z, r, text} | {t:'enter', x, z, r, text, what}
+//       | {t:'kill', x, z, n, text} | {t:'hold', x, z, s, text}
+//       | {t:'race', pts:[[x,z]...], r, time, text}
+const DEFS = [
+  ['First Wheels', 'mara', 'Milo. You need wheels before anything else. There is a Kestrel parked up the avenue — take it, then come see me.',
+    [{ t: 'goto', x: 0, z: 232, r: 6, text: 'Go to the parked Kestrel' },
+     { t: 'enter', x: 0, z: 232, r: 5, text: 'Get in the car (E)', what: 'car' },
+     { t: 'goto', x: -72, z: -72, r: 8, text: "Drive to Mara's Place" }]],
+  ['The Package', 'dario', 'Dario here. Pick up the package at the dock office, then run it to Tessa at the garage. No detours.',
+    [{ t: 'goto', x: 240, z: -40, r: 7, text: 'Pick up the package at the dock office' },
+     { t: 'goto', x: 48, z: -48, r: 8, text: "Deliver it to Tessa's Garage" }]],
+  ['Bay Run', 'ivy', 'Ivy: the Bay Run is tonight. Five gates down the coast road — beat the clock and the whole Bay hears about it.',
+    [{ t: 'race', pts: [[0, 288], [144, 288], [288, 144], [288, 0], [296, 0]], r: 9, time: 150, text: 'Bay Run: hit every gate' }]],
+  ['Dockside', 'mara', 'The Vultures are muscling the docks. Clear all six of them out, and the yard is ours again.',
+    [{ t: 'goto', x: 250, z: 20, r: 10, text: 'Go to the dock yard' },
+     { t: 'kill', x: 250, z: 20, n: 3, text: "Clear the yard of Deke's crew" }]],
+  ['The Getaway', 'sol', 'Sol: the cops are coming — three stars and climbing. Get to the Pier House and lay low. Move!',
+    [{ t: 'escape', x: 280, z: 160, r: 8, text: 'Escape to the Pier House', stars: 3 }]],
+  ['Grand Theft Bay', 'ivy', 'Ivy: a Comet GT is sitting at the hotel valet, keys in it, begging to be taken. Bring it to the garage.',
+    [{ t: 'goto', x: 96, z: 48, r: 7, text: 'Find the Comet GT at the valet' },
+     { t: 'enter', x: 96, z: 48, r: 5, text: 'Steal the Comet GT (E)', what: 'comet' },
+     { t: 'goto', x: 48, z: -48, r: 8, text: "Bring the Comet to Tessa's Garage" }]],
+  ['Payback', 'dario', 'Dario: ten Vultures downtown, around the bank. They hit our crew — now we hit back. All ten.',
+    [{ t: 'goto', x: 0, z: 24, r: 12, text: 'Go to the bank plaza' },
+     { t: 'kill', x: 0, z: 24, n: 4, text: "Take down Deke's crew (4 left)" }]],
+  ['The Heist', 'mara', 'Mara: the bank vault, eight seconds on the drill, then four stars and a run for the loft. This is the big one.',
+    [{ t: 'goto', x: 0, z: 24, r: 7, text: 'Get to the bank' },
+     { t: 'hold', x: 0, z: 24, s: 8, r: 30, text: 'Hold F to crack the vault', stars: 4 },
+     { t: 'goto', x: 72, z: 96, r: 8, text: 'Escape to the loft' }]],
+  ['High Tide', 'sol', 'Sol: the Marlin is fuelled at the pier. Five buoys out in the bay — thread them and bring her home.',
+    [{ t: 'goto', x: 296, z: 0, r: 7, text: 'Go to the Marlin at the pier' },
+     { t: 'enter', x: 296, z: 0, r: 5, text: 'Board the Marlin (E)', what: 'boat' },
+     { t: 'race', pts: [[330, -60], [380, -20], [420, 30], [380, 80], [330, 60], [310, 120]], r: 10, time: 120, text: 'High Tide: thread the buoys' }]],
+  ['King of the Bay', 'mara', 'Mara: last one. A dash across downtown, then the rest of Deke\u2019s crew at the loft. Win this and the Bay is yours.',
+    [{ t: 'race', pts: [[0, 0], [96, -96], [-96, -96], [-96, 96], [72, 96]], r: 9, time: 160, text: 'Downtown Dash: hit every gate' },
+     { t: 'kill', x: 72, z: 96, n: 3, text: 'Finish Deke\u2019s crew at the loft' }]],
 ];
 
-// A race: waypoint loop, 3 AI opponents, position by progress.
-export class Race {
-  constructor(scene, city, circuitKey, laps, boat, playerVehicle) {
-    this.scene = scene;
-    this.city = city;
-    this.circuit = city.circuits[circuitKey];
-    this.laps = laps;
-    this.boat = boat;
-    this.points = this.circuit.points;
-    this.playerVehicle = playerVehicle;
-    this.playerCp = 0;
-    this.playerLap = 0;
-    this.finished = false;
-    this.playerPlace = 0;
-    this.racers = [];
-    this.time = 0;
-    const start = this.points[0];
-    const dir = Math.atan2(this.points[1][0] - start[0], this.points[1][1] - start[1]);
-    for (let i = 0; i < 3; i++) {
-      const bx = start[0] - Math.sin(dir) * (6 + i * 7);
-      const bz = start[1] - Math.cos(dir) * (6 + i * 7);
-      const cls = boat ? 'boat' : (i === 0 ? 'sports' : i === 1 ? 'muscle' : 'sedan');
-      const v = new Vehicle(scene, cls, bx, bz, dir, { driver: 'racer' });
-      v.raceCp = 0;
-      v.raceLap = 0;
-      v.racePace = 0.68 + i * 0.03 + Math.random() * 0.02;
-      v.raceDone = false;
-      this.racers.push(v);
-    }
-  }
+export function createMissions(G) {
+  const scene = G.scene;
+  // The objective marker: a golden light beam + a spinning diamond.
+  const beamGeo = new THREE.CylinderGeometry(0.9, 0.9, 60, 10, 1, true);
+  const beamMat = new THREE.MeshBasicMaterial({ color: 0xffc21f, transparent: true, opacity: 0.3, side: THREE.DoubleSide, depthWrite: false });
+  const beam = new THREE.Mesh(beamGeo, beamMat);
+  beam.position.y = 30;
+  const diaGeo = new THREE.OctahedronGeometry(1.4);
+  const diaMat = new THREE.MeshBasicMaterial({ color: 0xffc21f });
+  const diamond = new THREE.Mesh(diaGeo, diaMat);
+  diamond.position.y = 6;
+  const marker = new THREE.Group();
+  marker.add(beam); marker.add(diamond);
+  marker.visible = false;
+  scene.add(marker);
 
-  // Total progress in checkpoints (lap * points + cp) for a racer.
-  _progress(v) {
-    return (v.raceLap || 0) * this.points.length + (v.raceCp || 0);
-  }
+  let current = 0;      // mission index 0..9, 10 = campaign done
+  let stage = 0;
+  let holdT = 0;
+  let holdEndT = -100; // game time a vault-crack hold last completed
+  let raceIdx = 0, raceT = 0;
+  let spawnedForStage = -1;
+  let cometCar = null, marlinBoat = null, m1Car = null;
 
-  playerProgress() {
-    return this.playerLap * this.points.length + this.playerCp;
-  }
-
-  update(dt, player) {
-    this.time += dt;
-    if (this.finished) return;
-    // Player checkpoint: pass within 18 m of the next point, in order.
-    const pv = player.inVehicle || player;
-    const next = this.points[(this.playerCp + 1) % this.points.length];
-    if (dist(pv.x, pv.z, next[0], next[1]) < 18) {
-      this.playerCp++;
-      if (this.playerCp >= this.points.length) {
-        this.playerCp = 0;
-        this.playerLap++;
-        if (this.playerLap >= this.laps) {
-          this.finished = true;
-          this.playerPlace = this._placeAtFinish();
-        }
-      }
-    }
-    // AI racers follow the waypoints.
-    for (const r of this.racers) {
-      if (r.raceDone || r.dead) continue;
-      const target = this.points[(r.raceCp + 1) % this.points.length];
-      const wantHeading = Math.atan2(target[0] - r.x, target[1] - r.z);
-      const steer = clamp(angleDiff(r.heading, wantHeading) * 1.8, -1, 1);
-      const cruise = r.topSpeed * r.racePace;
-      const throttle = r.speed < cruise ? 0.8 : 0.1;
-      r.drive(dt, steer, throttle, this.city, [this.playerVehicle, ...this.racers].filter(Boolean));
-      if (dist(r.x, r.z, target[0], target[1]) < 18) {
-        r.raceCp++;
-        if (r.raceCp >= this.points.length) {
-          r.raceCp = 0;
-          r.raceLap++;
-          if (r.raceLap >= this.laps) r.raceDone = true;
-        }
-      }
-    }
-    // If every racer finished before the player, the player cannot win.
-    if (this.racers.every((r) => r.raceDone)) {
-      this.finished = true;
-      this.playerPlace = 4;
-    }
-  }
-
-  _placeAtFinish() {
-    let place = 1;
-    const mine = this.playerProgress();
-    for (const r of this.racers) {
-      if (this._progress(r) > mine) place++;
-      else if (r.raceDone) place++;
-    }
-    return place;
-  }
-
-  positionText() {
-    const total = this.points.length * this.laps;
-    return `P${this._livePlace()}/4 · Lap ${Math.min(this.playerLap + 1, this.laps)}/${this.laps}`;
-  }
-
-  _livePlace() {
-    let place = 1;
-    const mine = this.playerProgress();
-    for (const r of this.racers) if (this._progress(r) > mine) place++;
-    return place;
-  }
-
-  dispose() {
-    for (const r of this.racers) r.remove(this.scene);
-    this.racers = [];
-  }
-}
-
-// Runs the story and the side activities. The game passes a ctx with the
-// live objects it needs; the manager calls back for rewards and messages.
-export class MissionManager {
-  constructor(scene, city) {
-    this.scene = scene;
-    this.city = city;
-    this.nextIndex = 0;
-    this.active = null;
-    this.paused = null;
-    this.side = null;
-    this.completed = 0;
-    this.raceCycle = 0;
-    this._spawned = [];
-    // Objective beacon: a light pillar and a floating diamond.
-    const beam = new THREE.Mesh(
-      new THREE.CylinderGeometry(1.6, 1.6, 60, 12, 1, true),
-      new THREE.MeshBasicMaterial({ color: 0xffd24a, transparent: true, opacity: 0.28, side: THREE.DoubleSide, depthWrite: false })
-    );
-    beam.position.y = 30;
-    const diamond = new THREE.Mesh(
-      new THREE.OctahedronGeometry(1.6),
-      new THREE.MeshBasicMaterial({ color: 0xffd24a })
-    );
-    diamond.position.y = 7;
-    this.marker = new THREE.Group();
-    this.marker.add(beam);
-    this.marker.add(diamond);
-    this.marker.visible = false;
-    scene.add(this.marker);
-    this.markerPos = null;
-    this.objectiveText = 'Welcome to Solmar Bay';
-    this.time = 0;
-  }
-
-  allDone() {
-    return this.nextIndex >= MISSION_DEFS.length;
-  }
-
-  currentDef() {
-    return MISSION_DEFS[this.nextIndex];
-  }
-
-  // Where the next mission starts (its first located stage, else Mara's).
-  startPosition() {
-    const def = this.currentDef();
-    if (!def) return null;
-    for (const s of def.stages) if (s.x !== undefined) return { x: s.x, z: s.z, r: s.r || 12 };
-    return { x: -245, z: -245, r: 12 };
-  }
-
-  startMission(ctx) {
-    const def = this.currentDef();
-    if (!def || this.active || this.side) return false;
-    this.active = { def, stageIdx: 0, hold: 0, spawned: [], race: null, raceLostAt: 0 };
-    ctx.onMessage(`${def.name} — ${def.brief}`);
-    this._beginStage(ctx);
-    return true;
-  }
-
-  _beginStage(ctx) {
-    const a = this.active;
-    const s = a.def.stages[a.stageIdx];
-    a.hold = 0;
-    a.spawned = [];
-    if (s.type === 'enter' && s.cls) {
-      const v = new Vehicle(this.scene, s.cls, s.x + 4, s.z + 4, Math.PI / 2, { driver: null, owned: true });
-      ctx.addVehicle(v);
-      a.spawned.push(v);
-    } else if (s.type === 'kill') {
-      a.spawned = ctx.combat.spawnEnemies(s.x, s.z, s.count, s.label);
-    } else if (s.type === 'race') {
-      const start = this.city.circuits[s.circuit].points[0];
-      let car = ctx.player.inVehicle;
-      // A slow car cannot win: a proper race car waits at the start line.
-      if (!car || car.def.speed < 34) {
-        car = new Vehicle(this.scene, s.car || 'sports', start[0], start[1] - 8, 0, { driver: null, owned: true });
-        ctx.addVehicle(car);
-        a.spawned.push(car);
-        ctx.onMessage(`A ${car.def.name} is waiting at the start line — get in (E).`);
-      }
-      a.race = new Race(this.scene, this.city, s.circuit, s.laps, false, car);
-    } else if (s.type === 'boatrace') {
-      const boat = spawnBoat(this.scene, 300, 252, 0);
-      ctx.addVehicle(boat);
-      a.spawned.push(boat);
-      ctx.onMessage('The Marlin is waiting at the pier — board it (E).');
-      a.race = new Race(this.scene, this.city, 'harbour', s.laps, true, boat);
-      // Bay buoys instead of the harbour loop.
-      a.race.points = [[-200, 260], [0, 305], [200, 260], [200, 320], [-200, 320]];
-      a.race.circuit = { name: 'Bay Circuit', points: a.race.points };
-    } else if (s.type === 'wanted') {
-      ctx.police.setStars(s.stars);
-    }
-    this._updateObjective(ctx);
-  }
-
-  _stageText(ctx) {
-    const a = this.active;
-    if (!a) return '';
-    const s = a.def.stages[a.stageIdx];
-    if (s.type === 'kill') {
-      const left = a.spawned.filter((e) => !e.dead).length;
-      return s.text.replace(/\(\d+\/\d+\)/, `(${s.count - left}/${s.count})`);
-    }
-    if (s.type === 'hold') return `${s.text} (${Math.floor(a.hold)}/${s.seconds}s)`;
-    if (s.type === 'race' || s.type === 'boatrace') return a.race ? a.race.positionText() + ' — ' + s.text : s.text;
+  function def() { return DEFS[current]; }
+  function stageDef() { return DEFS[current][3][stage]; }
+  function name() { return current < 10 ? DEFS[current][0] : 'Free Roam'; }
+  function objective() {
+    if (current >= 10) return 'Solmar Bay is yours. Free roam — races, fares, coins.';
+    const s = stageDef();
     return s.text;
   }
+  function waypoint() {
+    if (current >= 10) return null;
+    const s = stageDef();
+    if (s.t === 'race') return { x: s.pts[raceIdx][0], z: s.pts[raceIdx][1], r: s.r };
+    return { x: s.x, z: s.z, r: s.r || 7 };
+  }
 
-  _updateObjective(ctx) {
-    if (this.side) {
-      this.objectiveText = this.side.text;
-      this.markerPos = this.side.markerPos;
+  function startMission(i) {
+    current = i; stage = 0; holdT = 0; raceIdx = 0; raceT = 0; spawnedForStage = -1;
+    const [nm, who, brief] = DEFS[i];
+    G.hud.setMission(nm, objective());
+    G.hud.dialogue(CREW[who] || who, brief);
+    G.hud.announce(`${nm} — ${objective()}`, 3000);
+  }
+
+  function completeMission() {
+    const [cash, rep] = MISSION_REWARDS[current];
+    G.player.addCash(cash);
+    G.player.addRespect(rep);
+    G.audio.mission();
+    G.hud.announce(`${DEFS[current][0]} complete — $${cash.toLocaleString()} + ${rep} respect`, 3200);
+    // Unlocks along the way.
+    if (current === 0) G.player.giveWeapon('pistol', 12);
+    if (current === 1) G.player.giveWeapon('smg', 30);
+    if (current === 5) { /* the Comet is yours now */ }
+    if (current === 6) G.player.giveWeapon('shotgun', 6);
+    if (current === 7) G.player.giveWeapon('rifle', 20);
+    current++;
+    if (current >= 10) {
+      G.hud.setMission('Bay King', 'Solmar Bay is yours.');
+      G.hud.dialogue('Mara', 'Bay King. The whole city knows your name now, Milo.');
+      G.hud.announce('KING OF THE BAY — campaign complete', 5000);
+      marker.visible = false;
       return;
     }
-    if (this.active) {
-      const a = this.active;
-      const s = a.def.stages[a.stageIdx];
-      this.objectiveText = `${a.def.name}: ${this._stageText(ctx)}`;
-      if (s.type === 'race' || s.type === 'boatrace') {
-        if (a.race) {
-          const next = a.race.points[(a.race.playerCp + 1) % a.race.points.length];
-          this.markerPos = { x: next[0], z: next[1] };
+    startMission(current);
+  }
+
+  function advance() {
+    // Leaving a hold stage starts a 12 s bust grace: the player has
+    // just cracked the vault on foot at 4 stars and needs a moment
+    // to reach the car — an instant bust the frame the drill ends
+    // would make the escape unplayable.
+    if (stageDef() && stageDef().t === 'hold') holdEndT = G.time;
+    stage++;
+    holdT = 0; raceIdx = 0; raceT = 0; spawnedForStage = -1;
+    if (stage >= DEFS[current][3].length) { completeMission(); return; }
+    G.hud.setMission(DEFS[current][0], objective());
+    const s = stageDef();
+    if (s.t === 'escape' && s.stars) G.police.setStars(s.stars);
+    if (s.t === 'hold' && s.stars) G.police.setStars(s.stars);
+  }
+
+  function ensureStageSpawns() {
+    const s = stageDef();
+    if (spawnedForStage === stage) return;
+    spawnedForStage = stage;
+    if (s.t === 'kill') {
+      G.combat.clearEnemies();
+      // Spawn the crew along the nearest road through the waypoint, not
+      // in a circle: the dock yard / plaza is full of containers and
+      // walls, and a crew member behind a container has no line of
+      // sight and cannot be shot (nor shoot back fairly). A road is
+      // always open, so the fight is a fair shootout.
+      const ax = Math.round(s.x / 48) * 48, az = Math.round(s.z / 48) * 48;
+      const alongX = Math.abs(s.x - ax) <= Math.abs(s.z - az);
+      for (let k = 0; k < s.n; k++) {
+        const off = (k - (s.n - 1) / 2) * 4; // 4 m spacing (was 9): the whole crew stays within the 16 m stand-and-shoot band, so none of them chases at 5.2 m/s while the driver aims
+        if (alongX) G.combat.spawnEnemy(ax, s.z + off);
+        else G.combat.spawnEnemy(s.x + off, az);
+      }
+    }
+    if (current === 0 && stage === 0 && !m1Car) {
+      m1Car = G.vehicles.spawnCar('kestrel', 0, 232, Math.PI, 'parked');
+    }
+    if (current === 5 && stage === 0 && !cometCar) {
+      cometCar = G.vehicles.spawnCar('comet', 96, 48, Math.PI / 2, 'parked');
+    }
+    if (current === 8 && stage === 0 && !marlinBoat) {
+      marlinBoat = G.vehicles.spawnCar('marlin', 298, 0, Math.PI / 2, 'parked'); // 298 (was 300): 2 m off the pier, so it is unambiguously the nearest vehicle to board
+    }
+  }
+
+  function update(dt, input) {
+    if (current >= 10) { marker.visible = false; return; }
+    const s = stageDef();
+    ensureStageSpawns();
+    const p = G.player.p;
+    const wp = waypoint();
+    if (wp) {
+      marker.visible = true;
+      marker.position.set(wp.x, 0, wp.z);
+      diamond.rotation.y += dt * 2;
+      diamond.position.y = 6 + Math.sin(G.time * 2) * 0.6;
+    } else marker.visible = false;
+
+    const d = wp ? Math.hypot(p.x - wp.x, p.z - wp.z) : 1e9;
+    G.hud.setObjective(objective(), d, wp);
+
+    if (s.t === 'goto' || s.t === 'enter' || s.t === 'escape') {
+      if (d < (s.r || 7)) {
+        if (s.t === 'enter') {
+          // Wait for E near the target (entering the car/boat completes it).
+          if (s.what === 'car' && !p.onFoot) advance();
+          else if (s.what === 'comet' && p.car === cometCar) advance();
+          else if (s.what === 'boat' && p.boat === marlinBoat) advance();
+          else if (!s.what && input.takePressed('KeyE')) advance();
+        } else {
+          advance();
+          if (s.t === 'escape') G.police.setStars(0);
         }
-      } else if (s.x !== undefined) {
-        this.markerPos = { x: s.x, z: s.z };
+      }
+    } else if (s.t === 'kill') {
+      const left = G.combat.aliveCount();
+      G.hud.setObjective(`${s.text} (${left} left)`, d, wp);
+      if (left === 0) advance();
+    } else if (s.t === 'hold') {
+      if (d < (s.r || 7) && input.down('KeyF')) {
+        holdT += dt;
+        G.hud.setObjective(`${s.text} — ${Math.ceil(s.s - holdT)}s`, d, wp);
+        if (holdT >= s.s) advance();
       } else {
-        this.markerPos = null;
+        holdT = Math.max(0, holdT - dt * 2);
+        G.hud.setObjective(s.text, d, wp);
       }
-      return;
-    }
-    if (!this.allDone()) {
-      const def = this.currentDef();
-      const sp = this.startPosition();
-      this.objectiveText = `Next mission: ${def.name} — go to the marker, press E`;
-      this.markerPos = sp;
-      return;
-    }
-    this.objectiveText = 'ALL MISSIONS DONE — you are the Bay King';
-    this.markerPos = null;
-  }
-
-  _advance(ctx) {
-    const a = this.active;
-    a.stageIdx++;
-    if (a.stageIdx >= a.def.stages.length) {
-      const reward = MISSION_REWARDS[a.def.id - 1];
-      ctx.onReward(reward.cash, reward.respect, `${a.def.name} complete: +$${reward.cash}, +${reward.respect} respect`);
-      ctx.audio.missionDone();
-      if (a.def.id === 3) {
-        ctx.combat.giveWeapon('smg', 96);
-        ctx.onMessage('Ivy gave you an SMG (press 2).');
+    } else if (s.t === 'race') {
+      raceT += dt;
+      const pt = s.pts[raceIdx];
+      const rd = Math.hypot(p.x - pt[0], p.z - pt[1]);
+      G.hud.setObjective(`${s.text} — gate ${raceIdx + 1}/${s.pts.length} (${Math.ceil(s.time - raceT)}s)`, rd, wp);
+      if (rd < s.r) {
+        G.audio.pickup();
+        raceIdx++;
+        if (raceIdx >= s.pts.length) { advance(); return; }
       }
-      if (a.race) { a.race.dispose(); a.race = null; }
-      this.completed++;
-      this.nextIndex++;
-      this.active = null;
-    } else {
-      this._beginStage(ctx);
-    }
-    this._updateObjective(ctx);
-  }
-
-  // The active mission's current stage wants this E press (interact).
-  wantsInteract(ctx) {
-    if (!this.active) return false;
-    const s = this.active.def.stages[this.active.stageIdx];
-    if (s.type !== 'interact') return false;
-    return dist(ctx.player.x, ctx.player.z, s.x, s.z) < s.r;
-  }
-
-  // Is the player at the next mission's start marker? (E starts it there,
-  // and that beats entering a nearby car.)
-  nearStartMarker(ctx) {
-    if (this.active || this.side || this.allDone()) return false;
-    const sp = this.startPosition();
-    if (!sp) return false;
-    return dist(ctx.player.x, ctx.player.z, sp.x, sp.z) < (sp.r || 12);
-  }
-
-  // Start the next mission from its marker (called by the game's E key).
-  tryStartAtMarker(ctx) {
-    if (this.active || this.side || this.allDone()) return false;
-    const sp = this.startPosition();
-    if (!sp) return false;
-    if (dist(ctx.player.x, ctx.player.z, sp.x, sp.z) < (sp.r || 12)) {
-      return this.startMission(ctx);
-    }
-    return false;
-  }
-
-  update(dt, ctx) {
-    this.time += dt;
-    if (this.side) {
-      this._updateSide(dt, ctx);
-      this._updateObjective(ctx);
-      this._animateMarker(dt);
-      return;
-    }
-    if (!this.active) {
-      // The next mission waits at its start marker (E starts it).
-      this._updateObjective(ctx);
-      this._animateMarker(dt);
-      return;
-    }
-    const a = this.active;
-    const s = a.def.stages[a.stageIdx];
-    const p = ctx.player;
-    const at = (x, z, r) => dist(p.x, p.z, x, z) < r;
-    let done = false;
-    switch (s.type) {
-      case 'goto':
-      case 'drive':
-      case 'escape':
-        if (at(s.x, s.z, s.r)) {
-          if (s.type === 'escape') ctx.police.clear();
-          done = true;
-        }
-        break;
-      case 'interact':
-        if (at(s.x, s.z, s.r) && ctx.input.wasHit(s.key || 'e')) done = true;
-        break;
-      case 'enter':
-        if (p.inVehicle && (!s.cls || p.inVehicle.cls === s.cls)) done = true;
-        break;
-      case 'kill':
-        if (a.spawned.every((e) => e.dead)) done = true;
-        break;
-      case 'hold':
-        if (at(s.x, s.z, s.r) && ctx.input.isDown(s.key || 'f')) {
-          a.hold += dt;
-          if (a.hold >= s.seconds) {
-            done = true;
-            if (a.def.id === 8) ctx.police.setStars(4);
-          }
-        } else {
-          a.hold = Math.max(0, a.hold - dt * 2);
-        }
-        break;
-      case 'wanted':
-        if (ctx.police.stars >= s.stars) done = true;
-        break;
-      case 'race':
-      case 'boatrace': {
-        if (!a.race) break;
-        a.race.update(dt, p);
-        if (a.race.finished) {
-          if (a.race.playerPlace === 1) {
-            ctx.onMessage(a.race.boat ? 'Bay race won!' : 'Race won!');
-            a.race.dispose();
-            a.race = null;
-            done = true;
-          } else {
-            ctx.onMessage(`Finished P${a.race.playerPlace} — race restarts.`);
-            a.race.dispose();
-            a.race = null;
-            this._beginStage(ctx); // re-spawn the race
-          }
-        }
-        break;
-      }
-      default:
-        break;
-    }
-    if (done) this._advance(ctx);
-    else this._updateObjective(ctx);
-    this._animateMarker(dt);
-  }
-
-  _animateMarker(dt) {
-    if (!this.markerPos) { this.marker.visible = false; return; }
-    this.marker.visible = true;
-    this.marker.position.set(this.markerPos.x, 0, this.markerPos.z);
-    this.marker.children[1].position.y = 7 + Math.sin(this.time * 3) * 0.8;
-    this.marker.children[1].rotation.y += dt * 2;
-  }
-
-
-  // ---- side activities: T starts a street race (in a car) or a taxi
-  // fare (on foot). Both PAUSE the story mission and restore it after.
-  trySideActivity(ctx) {
-    if (this.side) return false;
-    const p = ctx.player;
-    if (p.inVehicle) {
-      // Street race: cycle the three circuits. $200 entry fee.
-      if (ctx.cash < 200) { ctx.onMessage('Street race needs a $200 entry fee.'); return false; }
-      ctx.onSpend(200);
-      const keys = ['harbour', 'downtown', 'coast'];
-      const key = keys[this.raceCycle % keys.length];
-      this.raceCycle++;
-      this.paused = this.active;
-      this.active = null;
-      const race = new Race(this.scene, this.city, key, CIRCUITS[key].laps, false, p.inVehicle);
-      this.side = { type: 'race', race, circuit: key, text: `Street race: ${CIRCUITS[key].name} — win $1200 + $500`, markerPos: null };
-      ctx.onMessage(`Street race: ${CIRCUITS[key].name} ($200 fee). Win it!`);
-      return true;
-    }
-    // Taxi fare: a cab and a passenger appear nearby.
-    const cab = new Vehicle(this.scene, 'taxi', p.x + 8, p.z + 8, 0, { driver: null });
-    ctx.addVehicle(cab);
-    const dests = [[140, 140], [-140, -70], [210, -140], [0, 210], [-210, -210]];
-    const dest = dests[Math.floor(Math.random() * dests.length)];
-    this.paused = this.active;
-    this.active = null;
-    this.side = {
-      type: 'taxi', phase: 'pickup', cab, dest,
-      text: 'Taxi fare: get in the cab, then pick up the passenger',
-      markerPos: { x: p.x + 14, z: p.z + 14 },
-      passenger: { x: p.x + 14, z: p.z + 14 },
-    };
-    ctx.onMessage('Taxi fare: get in the cab (E).');
-    return true;
-  }
-
-  _updateSide(dt, ctx) {
-    const s = this.side;
-    const p = ctx.player;
-    if (s.type === 'race') {
-      s.race.update(dt, p);
-      s.text = `Street race: ${CIRCUITS[s.circuit].name} — ${s.race.positionText()}`;
-      const next = s.race.points[(s.race.playerCp + 1) % s.race.points.length];
-      s.markerPos = { x: next[0], z: next[1] };
-      if (s.race.finished) {
-        if (s.race.playerPlace === 1) {
-          ctx.onReward(1700, 120, 'Street race won: +$1700, +120 respect');
-          ctx.audio.missionDone();
-        } else {
-          ctx.onMessage(`Street race: finished P${s.race.playerPlace}. Fee lost.`);
-        }
-        s.race.dispose();
-        this.side = null;
-        this.active = this.paused;
-        this.paused = null;
-        if (this.active) this._updateObjective(ctx);
-      }
-      return;
-    }
-    // Taxi fare.
-    if (s.phase === 'pickup') {
-      if (p.inVehicle) {
-        s.phase = 'ride';
-        s.text = 'Taxi fare: drive the passenger to the marker';
-        s.markerPos = { x: s.dest[0], z: s.dest[1] };
-        ctx.onMessage('Passenger aboard — drive to the marker.');
-      }
-      return;
-    }
-    if (s.phase === 'ride') {
-      if (!p.inVehicle) { s.phase = 'pickup'; s.markerPos = s.passenger; return; }
-      if (dist(p.x, p.z, s.dest[0], s.dest[1]) < 12) {
-        const fare = 60 + Math.round(dist(s.passenger.x, s.passenger.z, s.dest[0], s.dest[1]) * 1.5);
-        ctx.onReward(fare, 20, `Taxi fare complete: +$${fare}, +20 respect`);
-        ctx.audio.pickup();
-        this.side = null;
-        this.active = this.paused;
-        this.paused = null;
-        if (this.active) this._updateObjective(ctx);
+      if (raceT > s.time) {
+        // Out of time: restart the race stage.
+        G.hud.announce('Out of time — run it again', 2500);
+        raceIdx = 0; raceT = 0;
       }
     }
   }
 
-  cancelSide(ctx) {
-    if (!this.side) return;
-    if (this.side.type === 'race' && this.side.race) this.side.race.dispose();
-    this.side = null;
-    this.active = this.paused;
-    this.paused = null;
-    this._updateObjective(ctx);
-  }
+  return {
+    update, startMission, name, objective, waypoint,
+    get current() { return current; },
+    get stage() { return stage; },
+    // True while the current stage is a vault-crack hold: the cops
+    // close in but do not bust mid-drill (the bust is for the escape,
+    // not for standing at the vault — otherwise the hold is impossible
+    // at 4 stars). DEFS entries are [name, speaker, dialogue, stages].
+    isHoldStage() { const d = DEFS[current]; return !!d && !!d[3][stage] && d[3][stage].t === 'hold'; },
+    // True for 12 s after a hold completes (the getaway grace — walk back to the car and get in).
+    isHoldGrace() { return (G.time - holdEndT) < 12; },
+    // The vehicle kind the current enter stage wants ('car' / 'boat' /
+    // 'comet' / null): pressing E near the pier must board the Marlin,
+    // not whichever traffic car happens to be closest.
+    enterWhat() { const s = stageDef(); return s && s.t === 'enter' ? (s.what || null) : null; },
+    // The SPECIFIC vehicle the current enter stage wants (the parked
+    // Comet GT, the Marlin) — the stage only advances on that one.
+    enterTarget() {
+      const s = stageDef();
+      if (!s || s.t !== 'enter') return null;
+      if (s.what === 'comet') return cometCar;
+      if (s.what === 'boat') return marlinBoat;
+      return null;
+    },
+    setCurrent(i) { startMission(i); },
+    // Jump straight to a stage (used by the screenshot staging).
+    setStage(s) {
+      stage = s; holdT = 0; raceIdx = 0; raceT = 0; spawnedForStage = -1;
+      G.hud.setMission(DEFS[current][0], objective());
+    },
+  };
 }

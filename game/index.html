@@ -3,26 +3,72 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Solmar Bay — an open-world crime game</title>
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%23f2c200'/%3E%3Ctext x='16' y='23' font-size='20' text-anchor='middle' font-family='sans-serif' font-weight='bold'%3ES%3C/text%3E%3C/svg%3E">
+<link rel="icon" href="data:,">
+<title>SOLMAR BAY — Sun • Salt • Stolen Cars</title>
 <style>
-  html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; background: #0a1420; }
-  #game-root { position: fixed; inset: 0; }
-  #game-root canvas { display: block; }
-  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; overflow: hidden; background: #101418; height: 100%; }
+  #game { display: block; width: 1280px; height: 800px; }
+  #hud { position: absolute; inset: 0; width: 1280px; height: 800px; pointer-events: none;
+    font-family: Arial, Helvetica, sans-serif; color: #fff; user-select: none; }
+  #minimap-wrap { position: absolute; top: 14px; left: 14px; width: 200px; height: 200px;
+    border-radius: 50%; border: 3px solid rgba(255,255,255,0.9); overflow: hidden;
+    box-shadow: 0 4px 18px rgba(0,0,0,0.55); }
+  #minimap { width: 200px; height: 200px; display: block; }
+  #topright { position: absolute; top: 12px; right: 18px; text-align: right; text-shadow: 0 2px 6px rgba(0,0,0,0.8); }
+  #cash { font-size: 34px; font-weight: bold; color: #7aff7a; }
+  #stars { font-size: 26px; letter-spacing: 3px; color: #ffd94a; margin-top: 2px; }
+  #coins { font-size: 17px; color: #ffd94a; margin-top: 4px; font-weight: bold; }
+  #bottomleft { position: absolute; left: 18px; bottom: 16px; text-shadow: 0 2px 6px rgba(0,0,0,0.85); }
+  #mission-name { font-size: 19px; font-weight: bold; color: #ffc21f; letter-spacing: 1px; }
+  #mission-obj { font-size: 19px; margin-top: 2px; max-width: 560px; }
+  #mission-dist { font-size: 16px; color: #a0d8ff; margin-top: 2px; }
+  #health-row { margin-top: 10px; }
+  #health-label { font-size: 14px; font-weight: bold; letter-spacing: 1px; }
+  #health-bar { width: 220px; height: 14px; background: rgba(0,0,0,0.55); border: 1px solid #fff; margin-top: 3px; }
+  #health-fill { height: 100%; width: 100%; background: #2aff5a; }
+  #bottomright { position: absolute; right: 18px; bottom: 16px; text-align: right; text-shadow: 0 2px 6px rgba(0,0,0,0.85); }
+  #radio { font-size: 15px; color: #a0d8ff; font-weight: bold; }
+  #weapon { font-size: 20px; font-weight: bold; margin-top: 2px; }
+  #ammo { font-size: 16px; color: #d8d8d8; }
+  #speed { font-size: 42px; font-weight: bold; line-height: 1; margin-top: 4px; }
+  #speed span { font-size: 16px; color: #d8d8d8; }
+  #vehname { font-size: 17px; color: #ffc21f; font-weight: bold; }
+  #crosshair { position: absolute; left: 50%; top: 50%; transform: translate(-50%,-50%);
+    font-size: 26px; font-weight: bold; color: #fff; text-shadow: 0 0 4px #000; display: none; }
+  #prompt { position: absolute; left: 50%; bottom: 150px; transform: translateX(-50%);
+    background: rgba(0,0,0,0.72); padding: 9px 18px; border-radius: 6px; font-size: 18px;
+    font-weight: bold; display: none; }
+  #dialogue { position: absolute; left: 50%; bottom: 210px; transform: translateX(-50%);
+    width: 640px; background: rgba(0,0,0,0.78); border-left: 4px solid #ffc21f;
+    padding: 12px 18px; border-radius: 4px; display: none; }
+  #dlg-who { color: #7ae8c8; font-weight: bold; font-size: 16px; }
+  #dlg-text { font-size: 19px; margin-top: 3px; line-height: 1.35; }
+  #announce { position: absolute; left: 50%; top: 90px; transform: translateX(-50%);
+    background: rgba(0,0,0,0.72); color: #ffc21f; padding: 10px 22px; border-radius: 6px;
+    font-size: 20px; font-weight: bold; display: none; text-align: center; max-width: 900px; }
+  #damage { position: absolute; inset: 0; pointer-events: none; opacity: 0;
+    background: radial-gradient(ellipse at center, transparent 55%, rgba(255,20,20,0.55) 100%);
+    transition: opacity 0.25s; }
+  .overlay { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+    background: rgba(8, 12, 18, 0.72); pointer-events: auto; }
+  .panel { max-width: 680px; text-align: center; padding: 30px 40px; }
+  .panel h1 { font-size: 54px; margin: 0; letter-spacing: 3px; color: #ffc21f;
+    text-shadow: 0 4px 24px rgba(0,0,0,0.8); }
+  .panel .sub { font-size: 20px; color: #7ae8c8; letter-spacing: 4px; margin: 6px 0 18px; }
+  .panel p { font-size: 18px; line-height: 1.5; color: #e8e8e8; }
+  .panel button { pointer-events: auto; font-size: 20px; font-weight: bold; margin: 8px 6px;
+    padding: 12px 28px; border: none; border-radius: 6px; background: #ffc21f; color: #1a1a1a;
+    cursor: pointer; }
+  .panel button:hover { background: #ffd94a; }
+  .controls { margin-top: 22px; font-size: 14px; color: #b8b8b8; line-height: 1.7; }
 </style>
 <script type="importmap">
-{
-  "imports": {
-    "three": "./vendor/three.module.min.js"
-  }
-}
+{ "imports": { "three": "./vendor/three.module.min.js" } }
 </script>
 </head>
 <body>
-<div id="game-root"></div>
-<div id="loading" style="position:fixed;inset:0;display:flex;align-items:center;justify-content:center;color:#fff;background:#0a1420;font:600 20px system-ui,sans-serif;z-index:5">Loading Solmar Bay…</div>
-<noscript><div style="color:#fff;font:600 18px system-ui;padding:40px">Solmar Bay needs JavaScript to play.</div></noscript>
+<canvas id="game" width="1280" height="800"></canvas>
+<div id="hud"></div>
 <script type="module" src="./src/main.js"></script>
 </body>
 </html>
