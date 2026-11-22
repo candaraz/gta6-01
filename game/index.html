@@ -3,79 +3,145 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MIRADOR KEYS — Sun, Chrome &amp; Sirens</title>
 <link rel="icon" href="data:,">
-<title>SOLMAR BAY — Sun, Salt, Stolen Cars</title>
-<style>
-  html,body{margin:0;padding:0;height:100%;overflow:hidden;background:#1a2233;font-family:Verdana,Arial,sans-serif;}
-  #app{position:fixed;inset:0;}
-  canvas#gl{display:block;width:100%;height:100%;}
-  .hud{position:absolute;color:#fff;text-shadow:0 1px 3px rgba(0,0,0,.8);user-select:none;pointer-events:none;}
-  #cash{top:10px;right:16px;font-size:30px;font-weight:bold;color:#7dff8a;text-align:right;line-height:1.15;}
-  #stars{font-size:24px;letter-spacing:3px;color:#ffd23e;}
-  #coins{font-size:15px;color:#ffd23e;}
-  #minimap{position:absolute;top:10px;left:10px;width:190px;height:190px;border-radius:50%;border:3px solid rgba(255,255,255,.85);box-shadow:0 0 12px rgba(0,0,0,.6);background:#24304a;}
-  #mission{left:14px;bottom:14px;font-size:17px;line-height:1.35;max-width:520px;}
-  #mission b{color:#ffc23e;font-size:19px;letter-spacing:1px;}
-  #mission .dist{color:#9fd8ff;}
-  #health{left:14px;bottom:118px;font-size:13px;font-weight:bold;}
-  #healthbar{width:210px;height:13px;background:rgba(0,0,0,.55);border:1px solid #fff;margin-top:3px;}
-  #healthfill{height:100%;width:100%;background:#37e05a;}
-  #speed{right:16px;bottom:14px;text-align:right;line-height:1.1;}
-  #speed .kmh{font-size:44px;font-weight:bold;}
-  #speed .unit{font-size:15px;color:#cfe6ff;}
-  #speed .veh{font-size:15px;color:#ffc23e;font-weight:bold;}
-  #weapon{right:16px;bottom:118px;text-align:right;font-size:16px;line-height:1.3;}
-  #radio{right:16px;bottom:170px;text-align:right;font-size:14px;color:#8fd0ff;}
-  #cross{position:absolute;left:50%;top:50%;width:22px;height:22px;margin:-11px 0 0 -11px;color:#fff;font-size:22px;text-align:center;text-shadow:0 0 4px #000;display:none;}
-  #toast{left:50%;top:16%;transform:translateX(-50%);font-size:22px;font-weight:bold;color:#ffe27a;text-align:center;display:none;}
-  #help{right:16px;top:50%;transform:translateY(-50%);font-size:12px;color:#dfe9ff;opacity:.75;text-align:right;line-height:1.5;}
-  #screen{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;color:#fff;background:linear-gradient(180deg,rgba(20,26,48,.55),rgba(20,26,48,.85));text-align:center;z-index:5;}
-  #screen h1{font-size:64px;margin:0;letter-spacing:4px;color:#ffd23e;text-shadow:0 4px 0 #7a4a00,0 8px 24px rgba(0,0,0,.7);}
-  #screen h2{font-size:20px;margin:8px 0 22px;color:#9fd8ff;letter-spacing:3px;}
-  #screen p{font-size:15px;line-height:1.6;max-width:640px;margin:6px 0;color:#e8f0ff;}
-  #screen .btn{pointer-events:auto;cursor:pointer;margin-top:22px;padding:14px 44px;font-size:22px;font-weight:bold;color:#1a2233;background:#ffd23e;border:none;border-radius:8px;box-shadow:0 4px 0 #a67c00;}
-  #screen .btn:hover{background:#ffe27a;}
-  #screen .small{font-size:12px;color:#b9c8e8;margin-top:16px;}
-  #pause{position:absolute;inset:0;display:none;align-items:center;justify-content:center;flex-direction:column;background:rgba(10,14,28,.72);color:#fff;z-index:6;text-align:center;}
-  #pause h1{font-size:40px;color:#ffd23e;margin:0 0 10px;}
-  #pause .btn{pointer-events:auto;cursor:pointer;margin:8px;padding:10px 30px;font-size:18px;font-weight:bold;color:#1a2233;background:#ffd23e;border:none;border-radius:6px;}
-  #banner{position:absolute;left:50%;top:34%;transform:translate(-50%,-50%);font-size:52px;font-weight:bold;color:#ffd23e;text-shadow:0 3px 0 #7a4a00,0 6px 20px rgba(0,0,0,.8);display:none;z-index:4;text-align:center;}
-</style>
+<link rel="stylesheet" href="styles.css">
+<script type="importmap">
+{ "imports": { "three": "./vendor/three.module.min.js" } }
+</script>
 </head>
 <body>
 <div id="app">
-  <canvas id="gl"></canvas>
-  <canvas id="minimap" width="190" height="190"></canvas>
-  <div class="hud" id="cash">$1,250<br><span id="stars">☆☆☆☆☆</span><br><span id="coins">◉ 0/20</span></div>
-  <div class="hud" id="mission"><b>FIRST WHEELS</b><br><span id="obj">Go to the parked Kestrel</span><br><span class="dist" id="dist">32m</span></div>
-  <div class="hud" id="health">HEALTH 100<div id="healthbar"><div id="healthfill"></div></div></div>
-  <div class="hud" id="speed"><span class="kmh" id="kmh">0</span> <span class="unit">KM/H</span><br><span class="veh" id="veh">on foot</span></div>
-  <div class="hud" id="weapon"><span id="wname">P9 Pistol</span><br><span id="ammo">12 rounds</span></div>
-  <div class="hud" id="radio">♪ SOL FM</div>
-  <div class="hud" id="help">WASD drive / walk · E enter car<br>Click shoot · F punch · 1-5 weapons<br>Q cycle · R reload · T race / taxi<br>Space handbrake · Shift sprint · P pause</div>
-  <div id="cross">+</div>
-  <div class="hud" id="toast"></div>
-  <div id="banner"></div>
-  <div id="screen">
-    <h1>SOLMAR BAY</h1>
-    <h2>SUN · SALT · STOLEN CARS</h2>
-    <p>Milo Kade is back in Solmar Bay with an empty wallet and a debt to pay.
-    Mara has the jobs, Tessa has the garage, and Deke Marsh has the whole city scared.
-    Steal cars, run the jobs, shake the heat — and take the Bay back, one sunset at a time.</p>
-    <button class="btn" id="playBtn">PLAY</button>
-    <button class="btn" id="contBtn" style="display:none;background:#9fd8ff;">CONTINUE</button>
-    <div class="small">Keyboard + mouse · click the game to aim · an original city, story and cast · no network, no build step</div>
+  <canvas id="game-canvas"></canvas>
+
+  <!-- ============ HUD ============ -->
+  <div id="hud" class="hidden">
+    <div id="top-left">
+      <div id="stars" aria-label="Wanted level"></div>
+      <div id="dispatch-ticker"><span id="dispatch-text">MKPD DISPATCH — All units, stand by.</span></div>
+    </div>
+    <div id="top-right">
+      <div id="cash-row"><span id="cash-label">$</span><span id="cash">0</span></div>
+      <div id="respect-row"><span id="respect-label">RESPECT</span><span id="respect-rank">ROOKIE</span></div>
+      <div id="radio-badge"><span id="radio-dot"></span><span id="radio-name">MIRADOR SYNTHWAVE FM</span></div>
+    </div>
+    <div id="mission-banner">
+      <div id="mission-title">SUNSET BOOST</div>
+      <div id="objective">Steal the crimson coupe on the Strip.</div>
+    </div>
+    <div id="dialogue" class="hidden">
+      <div id="dialogue-name">MATEO</div>
+      <div id="dialogue-text"></div>
+    </div>
+    <div id="bottom-left">
+      <div id="vitals">
+        <div class="vital-row"><span class="vital-label">HEALTH</span><div class="vital-bar"><div id="health-fill"></div></div></div>
+        <div class="vital-row"><span class="vital-label">ARMOR</span><div class="vital-bar"><div id="armor-fill"></div></div></div>
+      </div>
+      <div id="weapon-row">
+        <span id="weapon-name">9MM PISTOL</span>
+        <span id="ammo">12 / ∞</span>
+      </div>
+    </div>
+    <div id="bottom-right">
+      <canvas id="minimap" width="220" height="220"></canvas>
+      <div id="speedo"><span id="speed">0</span><span id="speed-unit">MPH</span></div>
+    </div>
+    <div id="prompt" class="hidden">[F] STEAL CAR</div>
+    <div id="toast" class="hidden"></div>
+    <div id="stunt-popup" class="hidden"><span id="stunt-title">STUNT JUMP!</span><span id="stunt-sub"></span></div>
   </div>
-  <div id="pause">
-    <h1>PAUSED</h1>
-    <p>Solmar Bay waits for no one. Except now.</p>
-    <button class="btn" id="resumeBtn">RESUME</button>
-    <button class="btn" id="quitBtn" style="background:#9fd8ff;">SAVE &amp; TITLE</button>
+
+  <!-- Weapon wheel -->
+  <div id="weapon-wheel" class="hidden">
+    <div class="wheel-title">WEAPONS</div>
+    <div class="wheel-slot" data-weapon="0"><span class="wheel-key">1</span><span class="wheel-name">9MM PISTOL</span></div>
+    <div class="wheel-slot" data-weapon="1"><span class="wheel-key">2</span><span class="wheel-name">MICRO SMG</span></div>
+    <div class="wheel-slot" data-weapon="2"><span class="wheel-key">3</span><span class="wheel-name">TACTICAL SHOTGUN</span></div>
+    <div class="wheel-slot" data-weapon="3"><span class="wheel-key">4</span><span class="wheel-name">CARBINE RIFLE</span></div>
+    <div class="wheel-slot" data-weapon="4"><span class="wheel-key">5</span><span class="wheel-name">FRAG GRENADE</span></div>
   </div>
+
+  <!-- ============ TITLE SCREEN ============ -->
+  <div id="title-screen">
+    <div class="title-inner">
+      <div class="title-eyebrow">AN ORIGINAL OPEN-WORLD CRIME GAME</div>
+      <h1 class="title-logo">MIRADOR<span class="title-keys">KEYS</span></h1>
+      <div class="title-sub">SUN, CHROME &amp; SIRENS</div>
+      <div class="title-tagline">Mateo Vega and Elena Cruz take the Keys back — one sunset at a time.</div>
+      <div id="save-slots">
+        <div class="save-slot" data-slot="0">
+          <div class="slot-label">SLOT 1</div>
+          <div class="slot-body"><span class="slot-empty">EMPTY — NEW GAME</span></div>
+        </div>
+        <div class="save-slot" data-slot="1">
+          <div class="slot-label">SLOT 2</div>
+          <div class="slot-body"><span class="slot-empty">EMPTY — NEW GAME</span></div>
+        </div>
+        <div class="save-slot" data-slot="2">
+          <div class="slot-label">SLOT 3</div>
+          <div class="slot-body"><span class="slot-empty">EMPTY — NEW GAME</span></div>
+        </div>
+      </div>
+      <div class="title-buttons">
+        <button id="btn-continue" class="title-btn primary">CONTINUE</button>
+        <button id="btn-new" class="title-btn">NEW GAME</button>
+        <button id="btn-controls" class="title-btn">CONTROLS</button>
+      </div>
+      <div id="controls-panel" class="hidden">
+        <div class="controls-grid">
+          <span>WASD</span><span>Move / Drive</span>
+          <span>SHIFT</span><span>Sprint</span>
+          <span>SPACE</span><span>Jump / Handbrake drift</span>
+          <span>F</span><span>Enter / steal car</span>
+          <span>MOUSE</span><span>Look / Aim — Click to shoot</span>
+          <span>1–5 / TAB</span><span>Weapon wheel</span>
+          <span>R</span><span>Radio station</span>
+          <span>G</span><span>Call Elena (crew support)</span>
+          <span>M</span><span>City Atlas</span>
+          <span>ESC</span><span>Pause</span>
+        </div>
+      </div>
+      <div class="title-foot">MIRADOR KEYS is 100% original — city, characters, vehicles, story and music made for this entry. No network. No build step.</div>
+    </div>
+  </div>
+
+  <!-- ============ CITY ATLAS ============ -->
+  <div id="atlas" class="hidden">
+    <div class="atlas-inner">
+      <div class="atlas-title">CITY ATLAS — MIRADOR KEYS</div>
+      <canvas id="atlas-canvas" width="860" height="520"></canvas>
+      <div class="atlas-legend">
+        <span><i class="dot" style="background:#ffb347"></i>Mirador Strip</span>
+        <span><i class="dot" style="background:#7ec8ff"></i>Centro Financiero</span>
+        <span><i class="dot" style="background:#ffd24d"></i>Puerto Viejo</span>
+        <span><i class="dot" style="background:#ff5fd0"></i>Barrio Neon</span>
+        <span><i class="dot" style="background:#9dff7e"></i>Mirador Heights</span>
+      </div>
+      <button id="btn-atlas-close" class="title-btn">CLOSE [M]</button>
+    </div>
+  </div>
+
+  <!-- ============ PAUSE ============ -->
+  <div id="pause-menu" class="hidden">
+    <div class="pause-inner">
+      <div class="pause-title">PAUSED</div>
+      <button id="btn-resume" class="title-btn primary">RESUME</button>
+      <button id="btn-save" class="title-btn">SAVE GAME</button>
+      <button id="btn-quit-title" class="title-btn">QUIT TO TITLE</button>
+    </div>
+  </div>
+
+  <div id="end-screen" class="hidden">
+    <div class="end-inner">
+      <div id="end-title">BUSTED</div>
+      <div id="end-sub">The MKPD caught up with you.</div>
+      <button id="btn-end-retry" class="title-btn primary">TRY AGAIN</button>
+    </div>
+  </div>
+
+  <div id="loading">LOADING MIRADOR KEYS…</div>
 </div>
-<script type="importmap">
-{"imports":{"three":"./vendor/three.module.min.js"}}
-</script>
 <script type="module" src="./src/main.js"></script>
 </body>
 </html>

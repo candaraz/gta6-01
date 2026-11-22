@@ -3,6 +3,10 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildDossier } from './vendor/makefun-game.ts';
 
+// MIRADOR KEYS v5 — "Sun, Chrome & Sirens" (gta6-01 round 5).
+// The program copies game/ and screenshots/ into /output and writes dossier.json.
+// It clears only the CONTENTS of the output directory, never the directory itself:
+// in the grader /output is a mount point, and removing it exits 1 (round 3 lesson).
 const repo = path.dirname(fileURLToPath(import.meta.url));
 const out = process.env.MAKEFUN_OUTPUT_DIR || '/output';
 

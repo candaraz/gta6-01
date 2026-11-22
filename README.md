@@ -2,9 +2,9 @@
 [![Rank](https://make.fun/badge/gta6-01/candaraz/gta6-01/rank.svg)](https://make.fun/bounty/gta6-01)
 [![Reward](https://make.fun/badge/gta6-01/candaraz/gta6-01/reward.svg)](https://make.fun/bounty/gta6-01)
 
-# SOLMAR BAY — Sun • Salt • Stolen Cars
+# MIRADOR KEYS — Sun, Chrome & Sirens
 
-An original open-world crime game built for the [make.fun](https://make.fun) **Make GTA 6** bounty ([bounty page](https://make.fun/bounty/gta6-01)). Milo Kade is back in Solmar Bay with an empty wallet and a debt to pay. Mara has the jobs, Tessa has the garage, and Deke Marsh has the whole city scared. Steal cars, run the jobs, shake the heat — and take the Bay back, one sunset at a time.
+An original 3D sun-soaked coastal open-world crime game built for the [make.fun](https://make.fun) **Make GTA 6** bounty ([bounty page](https://make.fun/bounty/gta6-01)). Mateo Vega and Elena Cruz are taking the Mirador Keys back — one sunset at a time. Steal cars, run the jobs, shake the MKPD — and wear the Crown of Mirador.
 
 Everything here is original: the city, the people, the cars, the story, the art and the music were made for this entry. The game runs entirely offline in a desktop browser — no network, no build step.
 
@@ -21,37 +21,38 @@ node serve.ts
 
 ## The city
 
-Solmar Bay is a sun-soaked coastal city on a road grid, built procedurally from a seed: a downtown of tall windowed towers, the marina and docks to the east with cranes, containers and moored boats, Palm Court suburbs to the west, the Dockside Yards industrial north, a beach, the sea, and the lighthouse on the point. Palm trees and lamps line every street, billboards glow on the rooftops, clouds drift over the skyline, and a low golden sun throws long shadows that follow you through the streets.
+The Mirador Keys are a Caribbean-inspired coastal peninsula and causeway archipelago with five distinct districts: the **Mirador Strip** (beachfront boardwalk, art-deco hotels, turquoise animated ocean), **Centro Financiero** (glass skyscrapers, Solaris Bank plaza, traffic lights and crosswalks), **Puerto Viejo** (marina piers, yachts, shipping containers, gantry cranes, stunt ramps), **Barrio Neon** (cyan/magenta/amber neon storefronts, billboards, the chop shop), and **Mirador Heights** (hillside villas and the causeway bridge to the keys). Golden-hour light, a gradient sunset sky dome, real-time shadows, and palm-lined streets throughout.
 
 ## What you can do
 
-- **Drive and steal.** Ten vehicle classes with distinct handling — the Kestrel sedan, Bantam hatch, Longhorn pickup, Viceroy luxury, Tide Runner van, Falcon GT and Comet GT sports cars, the police Interceptor, the Stallion motorcycle and the Marlin boat. Take parked cars or pull drivers out of traffic; stealing puts heat on you.
-- **Live streets.** Traffic follows the roads, brakes for trouble and turns at intersections. Pedestrians stroll the sidewalks and run when things get loud.
-- **Wanted level.** Five stars of heat. Police cruisers pursue along the grid, ram and bust you if you stop; roadblocks go up at three stars and a helicopter circles at four. Hide to fade a star at a time.
-- **Ten story missions.** Linked jobs for Mara, Dario, Ivy and Sol with dialogue, waypoints, success and fail states: steal your first car, run a package, race the Bay Run, clear the docks, escape a three-star getaway, steal the Comet GT, pay back Deke's crew, crack the bank vault, race the Marlin through the bay buoys, and take the crown as King of the Bay. Rewards pay out in cash and respect, and unlock the SMG, the shotgun and the rifle.
-- **Side activities.** Three street-race circuits (T in a car), taxi fares (T on foot), twenty hidden Bay Coins, a garage with engine upgrades and a gun shop.
-- **Combat.** Fists, pistol, SMG, shotgun and rifle against Deke's Vultures, who hold their ground and shoot back only with a clear line of sight. Health and ammo pickups, muzzle flash, dust, smoke and sparks.
-- **HUD and maps.** Health, money, respect rank, wanted stars, objective tracker, speedometer, weapon and ammo, radio station, and a live circular minimap (roads, waypoint, police blips, enemies, north).
-- **Menus and saving.** Title screen, pause menu, busted/wasted flows, and saving to localStorage — position, money, story progress, weapons, coins and garage — with Continue on the title screen.
-- **Sound.** Every sound is synthesized live with WebAudio: engine, sirens, shots, crashes, pickups, cash, horn, skids, explosions, and three generated radio stations. No audio files.
+- **Drive and steal.** Seven vehicle classes with distinct handling — the Veloz GT sports coupe, Bruja 440 muscle car, Coastal X SUV, armored van, MKPD patrol cruiser, MKPD interceptor, and the OSPREY-1 police helicopter overhead. Take parked cars or carjack traffic; stealing puts heat on you.
+- **Live streets.** 20+ traffic vehicles follow road lanes, stop at red lights and panic when shots are fired. 30+ pedestrians stroll the sidewalks and flee gunfire and sirens.
+- **Wanted level.** Five stars of MKPD heat: patrol cruisers pursue, interceptors PIT and RAM, roadblocks go up at three stars, tactical vans arrive at four, and OSPREY-1 circles overhead at five with its searchlight tracking you. Break line of sight to cool down, or hit a Pay-n-Spray / chop shop.
+- **Eight story missions.** Sunset Boost, Pier 4 Smugglers, Solaris Vault Heist, Causeway Intercept, Neon Syndicate Ambush, Osprey Down, Harbor Extraction, and Crown of Mirador — with mission markers, dialogue, GPS route, cash and District Respect rewards.
+- **Side activities.** Stunt jumps with slow-mo air-time popups, street races, chop shop upgrades (armor, turbo, respray), and crew abilities — press G to call Elena for a getaway distraction.
+- **Combat.** Five weapons on a radial wheel (1–5 or Tab): 9mm pistol, Micro SMG, tactical shotgun, carbine rifle, frag grenade — against rival crew and armed MKPD officers, with muzzle flash, bullet tracers, explosions and drifting tire smoke.
+- **HUD and maps.** Wanted stars, cash, respect rank, mission banner, dispatch radio ticker, health/armor, weapon and ammo, speedometer, radio station, and a live circular minimap (roads, water, GPS route, police blips, enemies, north).
+- **Menus and saving.** Glassmorphic title screen with three save slots (mission progress, cash, respect rank), Continue / New Game, controls guide, pause menu, City District Atlas (M), and busted/wasted flows. Saves persist in localStorage.
+- **Sound.** Every sound is synthesized live with WebAudio: engine RPM hum, tire screech, police sirens, gunshots, explosions, UI clicks — and three switchable synth radio stations (R): Mirador Synthwave FM, Tropico Bass, MKPD Scanner. No audio files.
 
 ## Controls
 
 | Key | Action |
 | --- | --- |
 | W A S D | Move / drive |
-| Mouse drag | Look around |
-| E | Enter / exit car, talk, interact |
-| Click / F | Shoot / punch |
-| 1 2 3 4 5 | Fists, pistol, SMG, shotgun, rifle |
-| Q | Cycle weapon |
-| R | Reload |
-| T | Street race (in a car) / taxi fare (on foot) |
-| Space | Handbrake / jump |
-| Shift | Sprint |
-| H | Horn |
-| P / Esc | Pause |
+| Mouse drag / click | Look around / aim (pointer lock) |
+| Shift | Sprint / handbrake drift (in a car) |
+| Space | Jump |
+| F | Enter / exit / carjack |
+| Left click | Shoot / horn (in a car) |
+| Right click | Aim |
+| 1–5 / Tab | Weapon wheel |
+| R | Switch radio station |
+| G | Call Elena (getaway distraction) |
+| C | Switch character (Mateo / Elena) |
+| M | City District Atlas |
+| Esc / P | Pause |
 
 ## Structure
 
-The game is plain static files under `game/` — `index.html` plus one-job ES modules under `game/src/`, each named for what it does (`city.js`, `vehicles.js`, `traffic.js`, `pedestrians.js`, `player.js`, `camera.js`, `combat.js`, `police.js`, `missions.js`, `garage.js`, `hud.js`, `minimap.js`, `audio.js`, `effects.js`, `save.js`, `shots.js`, `input.js`, `config.js`, `random.js`, `main.js`). three.js is vendored as its minified module build under `game/vendor/`. `main.ts` (Node 22, standard library only) copies `game/` and `screenshots/` to the output directory and writes the dossier with the vendored make.fun library.
+The game is plain static files under `game/` — `index.html` plus one-job ES modules under `game/src/`, each named for what it does (`world/textures.js`, `world/cityBuilder.js`, `world/environment.js`, `entities/player.js`, `entities/vehicles.js`, `entities/traffic.js`, `entities/pedestrians.js`, `systems/policeDispatch.js`, `systems/combat.js`, `systems/missions.js`, `systems/audioRadio.js`, `systems/saveSystem.js`, `ui/hudMinimap.js`, `main.js`). three.js is vendored as its minified module build under `game/vendor/`. `main.ts` (Node 22, standard library only) copies `game/` and `screenshots/` to the output directory and writes the dossier with the vendored make.fun library.
